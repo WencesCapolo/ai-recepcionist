@@ -4,7 +4,7 @@ from typing import Optional
 
 from upstash_redis import Redis
 
-from app.models import ClientConfig
+from app.clients.models import ClientConfig
 from app.config import settings
 
 logger = logging.getLogger(__name__)

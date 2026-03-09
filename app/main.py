@@ -1,11 +1,23 @@
+import logging
 from fastapi import FastAPI
+from app.config import settings
+from app.webhook.router import router as webhook_router
 
-app = FastAPI(title="AI Receptionist")
+def create_app() -> FastAPI:
+    if settings.sentry_dsn:
+        import sentry_sdk
+        sentry_sdk.init(dsn=settings.sentry_dsn)
+        
+    logging.basicConfig(level=settings.log_level)
+    
+    app_instance = FastAPI()
+    
+    app_instance.include_router(webhook_router)
+    
+    @app_instance.get("/health")
+    async def health_check():
+        return {"status": "ok", "environment": settings.environment}
+        
+    return app_instance
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+app = create_app()

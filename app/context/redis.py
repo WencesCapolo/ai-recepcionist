@@ -95,3 +95,8 @@ def is_duplicate(message_id: str) -> bool:
         # On Redis failure, allow the message through (fail open)
         logger.error(f"Dedup Redis check failed for {message_id}: {e}")
         return False
+
+
+class ConversationContext:
+    def __init__(self, redis):
+        self.redis = redis

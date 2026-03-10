@@ -32,10 +32,8 @@ def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
         row = sheets.find_product(config.sheet_id, product)
         if not row:
             return f"No encontré el producto '{product}'. Podés preguntar por todos los productos disponibles."
-        return (
-            precio = int(row['precio'])
-            return f"{row['producto']}: ${precio:,} por {row['unidad']}."   
-        )
+        precio = int(row['precio'])
+        return f"{row['producto']}: ${precio:,} por {row['unidad']}."
 
     return {
         "definition": {

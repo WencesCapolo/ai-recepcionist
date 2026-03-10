@@ -229,9 +229,8 @@ async def run_agent(
         if msg.role in ("user", "assistant"):
             messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": user_message})
-
-    client = AsyncOpenAI()  # reads OPENAI_API_KEY from environment
-
+    from app.config import settings
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
     graph = _build_graph(client)
 
     initial_state: dict = {

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # LLM
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
 
     # Google
     google_service_account_json: str = ""

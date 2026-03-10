@@ -23,7 +23,7 @@ def build_tools(config: ClientConfig, sheets: SheetsClient) -> list:
 
 
 # --- Tool factories ---
-# Each returns a dict with `definition` (sent to Claude) and `handler` (called on tool_use)
+# Each returns a dict with `definition` (sent to AI API) and `handler` (called on tool_use)
 
 def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
     def handler(product: str) -> str:
@@ -33,7 +33,8 @@ def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
         if not row:
             return f"No encontré el producto '{product}'. Podés preguntar por todos los productos disponibles."
         return (
-            f"{row['producto']}: ${row['precio']:,} por {row['unidad']}."
+            precio = int(row['precio'])
+            return f"{row['producto']}: ${precio:,} por {row['unidad']}."   
         )
 
     return {

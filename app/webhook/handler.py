@@ -84,6 +84,7 @@ async def _persist(
     user_phone: str,
     user_message: str,
     assistant_reply: str,
+    tool_name: Optional[str],
     prompt_version: int,
     latency_ms: int,
 ) -> None:
@@ -105,7 +106,7 @@ async def _persist(
 
         messages = [
             Message(role="user", content=user_message),
-            Message(role="assistant", content=assistant_reply),
+            Message(role="assistant", content=assistant_reply, tool_name=tool_name),
         ]
         await conversation_service.log_messages(
             conversation_id=conversation_id,
@@ -183,12 +184,13 @@ async def handle_message(
             # Steps 7–8: Run agent + send reply
             # ----------------------------------------------------------
             reply: str = FALLBACK_MESSAGE
+            tool_name: Optional[str] = None
             agent_succeeded = False
 
             try:
                 from app.agent.graph import run_agent
 
-                reply = await run_agent(
+                reply, tool_name = await run_agent(
                     config=client_config,
                     history=history,
                     user_message=message_text,
@@ -201,6 +203,7 @@ async def handle_message(
                     f"Agent error [client={client_id} user={user_phone}]: {agent_err}"
                 )
                 reply = FALLBACK_MESSAGE
+                tool_name = None
 
             finally:
                 try:
@@ -221,7 +224,7 @@ async def handle_message(
             # ----------------------------------------------------------
             try:
                 history = append_message(history, Message(role="user", content=message_text))
-                history = append_message(history, Message(role="assistant", content=reply))
+                history = append_message(history, Message(role="assistant", content=reply, tool_name=tool_name))
                 save_history(client_id, user_phone, history)
             except Exception:
                 logger.exception(
@@ -239,6 +242,7 @@ async def handle_message(
                     user_phone,
                     message_text,
                     reply,
+                    tool_name,
                     client_config.prompt_version,
                     latency_ms,
                 )

@@ -5,12 +5,12 @@ Defines and runs the LangGraph agent loop.
 This is the ONLY file in the project that imports from langgraph.
 
 Exported interface:
-    run_agent(config, history, user_message, sheets) -> str
+    run_agent(config, history, user_message, sheets) -> tuple[str, Optional[str]]
 """
 
 import json
 import logging
-from typing import TypedDict
+from typing import TypedDict, Optional
 
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
@@ -36,6 +36,7 @@ class _AgentState(TypedDict):
     iterations: int               # safety counter
     final_reply: str              # set by agent node on text response
     _pending_tool_calls: list     # transient — tool call objects from the LLM response
+    used_tools: list[str]         # keeps track of tools called
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ def _make_agent_node(client: AsyncOpenAI):
                 "iterations": state["iterations"],
                 "final_reply": "",
                 "_pending_tool_calls": message.tool_calls,
+                "used_tools": state.get("used_tools", []) + [tc.function.name for tc in message.tool_calls],
             }
 
         # Text response — agent is done.
@@ -106,6 +108,7 @@ def _make_agent_node(client: AsyncOpenAI):
             "iterations": state["iterations"],
             "final_reply": reply,
             "_pending_tool_calls": [],
+            "used_tools": state.get("used_tools", []),
         }
 
     return agent_node
@@ -146,6 +149,7 @@ def _make_tools_node():
             "iterations": state["iterations"] + 1,
             "final_reply": "",
             "_pending_tool_calls": [],
+            "used_tools": state.get("used_tools", []),
         }
 
     return tools_node
@@ -198,7 +202,7 @@ async def run_agent(
     history: ConversationHistory,
     user_message: str,
     sheets: SheetsClient,
-) -> str:
+) -> tuple[str, Optional[str]]:
     """Run the agent loop for a single user turn.
 
     Args:
@@ -209,7 +213,8 @@ async def run_agent(
         sheets:       Authenticated Google Sheets client.
 
     Returns:
-        The assistant's final text reply as a plain string.
+        A tuple of (assistant's final text reply, used_tool_name).
+        If multiple tools were used, they are joined by commas.
 
     Raises:
         Any unhandled exception from the LLM or tool layer — the caller
@@ -240,6 +245,7 @@ async def run_agent(
         "iterations": 0,
         "final_reply": "",
         "_pending_tool_calls": [],
+        "used_tools": [],
     }
 
     result = await graph.ainvoke(initial_state)
@@ -249,4 +255,7 @@ async def run_agent(
         logger.error("Agent loop ended with empty reply. Final state: %s", result)
         raise RuntimeError("El agente no produjo una respuesta.")
 
-    return reply
+    used_tools: list[str] = result.get("used_tools", [])
+    tool_name = ",".join(set(used_tools)) if used_tools else None
+
+    return reply, tool_name

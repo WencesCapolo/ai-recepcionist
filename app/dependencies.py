@@ -11,6 +11,7 @@ from app.context.redis import ConversationContext
 from app.conversations.service import ConversationService
 from app.integrations.whatsapp import get_whatsapp_client
 from app.integrations.sheets import get_sheets_client
+from app.integrations.transcriber import get_transcriber_client
 
 @lru_cache
 def get_supabase() -> Client:

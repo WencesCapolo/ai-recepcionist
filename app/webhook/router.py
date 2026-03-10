@@ -9,6 +9,7 @@ from app.dependencies import (
     get_conversation_service,
     get_whatsapp_client,
     get_sheets_client,
+    get_transcriber_client,
 )
 
 router = APIRouter(prefix="/webhook")
@@ -32,6 +33,7 @@ async def receive_message(
     conversation_service=Depends(get_conversation_service),
     whatsapp_client=Depends(get_whatsapp_client),
     sheets_client=Depends(get_sheets_client),
+    transcriber_client=Depends(get_transcriber_client),
 ):
     payload = await request.json()
     
@@ -42,7 +44,8 @@ async def receive_message(
         get_client_by_phone=client_service.get_client_by_phone,
         conversation_service=conversation_service,
         whatsapp_client=whatsapp_client,
-        sheets_client=sheets_client
+        sheets_client=sheets_client,
+        transcriber_client=transcriber_client,
     )
     
     return {"status": "ok"}

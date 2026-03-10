@@ -2,9 +2,10 @@
 Orchestrates the full request lifecycle for a single incoming WhatsApp message.
 
 Steps (in order):
-  1. Extract message_id, user_phone, message_text from Meta payload.
+  1. Extract message_id, user_phone, message_text (or media_id) from Meta payload.
   2. Dedup check.
   3. Identify client by inbound business number.
+  3b. If audio message → transcribe via Whisper.
   4. Acquire per-conversation lock.
   5. Load conversation history from Redis.
   6. Record start time.
@@ -34,8 +35,12 @@ from app.conversations.models import ConversationHistory, Message
 logger = logging.getLogger(__name__)
 
 FALLBACK_MESSAGE = (
-    "Lo siento, tuve un problema para procesar tu mensaje. "
-    "Por favor intentá de nuevo en unos minutos 🙏"
+    "Disculpa, tuve un problema con tu mensaje. "
+    "Por favor mandame de nuevo en unos minutos, gracias!"
+)
+
+AUDIO_FALLBACK_MESSAGE = (
+    "Disculpa, no pude escuchar el audio. Podrías escribirme lo que necesitás?"
 )
 
 
@@ -43,12 +48,17 @@ FALLBACK_MESSAGE = (
 # Payload parsing helpers
 # ---------------------------------------------------------------------------
 
-def _extract_message_fields(payload: dict) -> Optional[tuple[str, str, str, str]]:
+def _extract_message_fields(
+    payload: dict,
+) -> Optional[tuple[str, str, Optional[str], str, Optional[str]]]:
     """
     Parse a Meta Cloud API webhook payload.
 
-    Returns (message_id, user_phone, message_text, inbound_number) or None
-    if the payload doesn't contain a valid inbound text message.
+    Returns (message_id, user_phone, message_text, inbound_number, media_id)
+    or None if the payload doesn't contain a supported inbound message.
+
+    - For text messages: message_text is set, media_id is None.
+    - For audio messages: message_text is None, media_id is set.
     """
     try:
         entry = payload["entry"][0]
@@ -59,16 +69,21 @@ def _extract_message_fields(payload: dict) -> Optional[tuple[str, str, str, str]
             return None
 
         msg = messages[0]
-
-        if msg.get("type") != "text":
-            return None
+        msg_type = msg.get("type")
 
         message_id: str = msg["id"]
         user_phone: str = msg["from"]
-        message_text: str = msg["text"]["body"]
         inbound_number: str = change["metadata"]["display_phone_number"]
 
-        return message_id, user_phone, message_text, inbound_number
+        if msg_type == "text":
+            return message_id, user_phone, msg["text"]["body"], inbound_number, None
+
+        if msg_type == "audio":
+            media_id: str = msg["audio"]["id"]
+            return message_id, user_phone, None, inbound_number, media_id
+
+        # Unsupported message type
+        return None
 
     except (KeyError, IndexError, TypeError):
         return None
@@ -131,6 +146,7 @@ async def handle_message(
     conversation_service: Any,       # ConversationService instance
     whatsapp_client: Any,            # WhatsAppClient instance
     sheets_client: Any,              # SheetsClient instance
+    transcriber_client: Any = None,  # TranscriberClient instance (optional)
 ) -> None:
     """
     Handle a single inbound WhatsApp message end-to-end.
@@ -142,10 +158,10 @@ async def handle_message(
     # ------------------------------------------------------------------
     parsed = _extract_message_fields(payload)
     if parsed is None:
-        logger.debug("Payload contains no valid text message — skipping.")
+        logger.debug("Payload contains no supported message — skipping.")
         return
 
-    message_id, user_phone, message_text, inbound_number = parsed
+    message_id, user_phone, message_text, inbound_number, media_id = parsed
 
     # ------------------------------------------------------------------
     # Step 2: Deduplication
@@ -163,6 +179,35 @@ async def handle_message(
         return
 
     client_id: str = str(client_config.id)
+
+    # ------------------------------------------------------------------
+    # Step 3b: Transcribe audio (if applicable)
+    # ------------------------------------------------------------------
+    if message_text is None and media_id is not None:
+        if transcriber_client is None:
+            logger.error("Audio message received but no transcriber_client provided.")
+            try:
+                await whatsapp_client.send_message(user_phone, AUDIO_FALLBACK_MESSAGE)
+            except Exception:
+                logger.exception(f"Failed to send audio fallback to {user_phone}")
+            return
+
+        try:
+            message_text = await transcriber_client.transcribe(media_id)
+            logger.info(
+                f"Audio transcribed [client={client_id} user={user_phone}]: "
+                f"{len(message_text)} chars"
+            )
+        except Exception as transcribe_err:
+            logger.exception(
+                f"Transcription failed [client={client_id} user={user_phone}]: "
+                f"{transcribe_err}"
+            )
+            try:
+                await whatsapp_client.send_message(user_phone, AUDIO_FALLBACK_MESSAGE)
+            except Exception:
+                logger.exception(f"Failed to send audio fallback to {user_phone}")
+            return
 
     # ------------------------------------------------------------------
     # Step 4: Acquire per-conversation lock

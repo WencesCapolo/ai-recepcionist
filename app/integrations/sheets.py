@@ -51,9 +51,30 @@ class SheetsClient:
         """
         rows = self.get_all_rows(sheet_id, worksheet)
         search = product_name.lower().strip()
+
+        # Pass 1: exact substring ("tornillo 6x50" in "tornillo 6x50")
         for row in rows:
             if search in str(row.get("producto", "")).lower():
                 return row
+
+        # Pass 2: all search words appear in product name
+        # handles "cable 2.5mm" → "Cable unipolar 2.5mm"
+        words = [w for w in search.split() if len(w) > 2]
+        if words:
+            for row in rows:
+                product_lower = str(row.get("producto", "")).lower()
+                if all(w in product_lower for w in words):
+                    return row
+
+        # Pass 3: stem match — strip trailing s/es for Spanish plurals
+        # handles "tornillos" → "tornillo", "candados" → "candado"
+        stemmed = search.rstrip("s").rstrip("e") if search.endswith(("s", "es")) else search
+        if stemmed != search:
+            for row in rows:
+                product_lower = str(row.get("producto", "")).lower()
+                if stemmed in product_lower:
+                    return row
+
         return None
 
 

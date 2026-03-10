@@ -103,6 +103,12 @@ def _make_agent_node(client: AsyncOpenAI):
 
         # Text response — agent is done.
         reply = (message.content or "").strip()
+        
+        iteration = state["iterations"]
+        stop_reason = response.choices[0].finish_reason
+        # Adapted the log line for OpenAI's response structure to avoid crashes (as response.content and b.type are for Anthropic)
+        logger.info(f"Agent loop iteration {iteration}, stop_reason={stop_reason}, content_types={['text' if message.content else 'None']}")
+        
         return {
             "messages": state["messages"],
             "iterations": state["iterations"],

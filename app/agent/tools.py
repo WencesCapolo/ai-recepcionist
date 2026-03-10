@@ -3,6 +3,7 @@ from typing import Optional
 
 from app.clients.models import ClientConfig
 from app.integrations.sheets import SheetsClient
+from rapidfuzz import process, fuzz
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ def build_tools(config: ClientConfig, sheets: SheetsClient) -> list:
         "get_price": _make_get_price(config, sheets),
         "get_stock": _make_get_stock(config, sheets),
         "get_all_products": _make_get_all_products(config, sheets),
+        "get_products_by_category": _make_get_products_by_category(config, sheets),
         "get_hours": _make_get_hours(config),
     }
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
@@ -138,6 +140,57 @@ def _make_get_hours(config: ClientConfig) -> dict:
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        },
+        "handler": handler,
+    }
+
+
+def _make_get_products_by_category(config: ClientConfig, sheets: SheetsClient) -> dict:
+    def handler(category: str) -> str:
+        if not config.sheet_id:
+            return "No hay catálogo disponible."
+        rows = sheets.get_all_rows(config.sheet_id)
+        if not rows:
+            return "No se pudo cargar el catálogo en este momento."
+
+        # Get unique categories from sheet
+        all_categories = [str(row.get("categoria", "")) for row in rows]
+        unique_categories = list(dict.fromkeys(c for c in all_categories if c))
+
+        # Fuzzy match the requested category against real ones
+        match = process.extractOne(
+            category,
+            unique_categories,
+            scorer=fuzz.partial_ratio,
+            score_cutoff=60,
+        )
+        if not match:
+            return f"No encontré la categoría '{category}'. Las categorías disponibles son: {', '.join(unique_categories)}."
+
+        matched_category = match[0]
+        matching_rows = [r for r in rows if r.get("categoria", "") == matched_category]
+
+        lines = [f"Productos en la categoría '{matched_category}':\n"]
+        for row in matching_rows:
+            precio = int(row["precio"])
+            lines.append(f"  • {row['producto']} — ${precio:,} por {row['unidad']}")
+
+        return "\n".join(lines).strip()
+
+    return {
+        "definition": {
+            "name": "get_products_by_category",
+            "description": "Busca productos por categoría (ej: 'pinturas', 'herramientas'). Devuelve la lista de productos en esa categoría.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Nombre de la categoría a consultar",
+                    }
+                },
+                "required": ["category"],
             },
         },
         "handler": handler,

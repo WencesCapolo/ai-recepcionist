@@ -6,6 +6,7 @@ from typing import Optional
 
 import gspread
 from google.oauth2.service_account import Credentials
+from rapidfuzz import process, fuzz
 
 from app.config import settings
 
@@ -46,37 +47,28 @@ class SheetsClient:
         self, sheet_id: str, product_name: str, worksheet: str = "productos"
     ) -> Optional[dict]:
         """
-        Case-insensitive search for a product by name.
-        Returns the first matching row or None.
-        """
-        rows = self.get_all_rows(sheet_id, worksheet)
-        search = product_name.lower().strip()
-
-        # Pass 1: exact substring ("tornillo 6x50" in "tornillo 6x50")
-        for row in rows:
-            if search in str(row.get("producto", "")).lower():
-                return row
-
-        # Pass 2: all search words appear in product name
-        # handles "cable 2.5mm" → "Cable unipolar 2.5mm"
-        words = [w for w in search.split() if len(w) > 2]
-        if words:
-            for row in rows:
-                product_lower = str(row.get("producto", "")).lower()
-                if all(w in product_lower for w in words):
-                    return row
-
-        # Pass 3: stem match — strip trailing s/es for Spanish plurals
-        # handles "tornillos" → "tornillo", "candados" → "candado"
-        stemmed = search.rstrip("s").rstrip("e") if search.endswith(("s", "es")) else search
-        if stemmed != search:
-            for row in rows:
-                product_lower = str(row.get("producto", "")).lower()
-                if stemmed in product_lower:
-                    return row
-
+        Fuzzy search for a product by name.
+    Returns the best matching row above 70% similarity, or None.
+    """
+    rows = self.get_all_rows(sheet_id, worksheet)
+    if not rows:
         return None
 
+    names = [str(r.get("producto", "")) for r in rows]
+    match = process.extractOne(
+        product_name,
+        names,
+        scorer=fuzz.partial_ratio,
+        score_cutoff=70,
+    )
+    if not match:
+        return None
+
+    matched_name = match[0]
+    for i, name in enumerate(names):
+        if name == matched_name:
+            return rows[i]
+    return None
 
 @lru_cache
 def get_sheets_client() -> SheetsClient:

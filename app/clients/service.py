@@ -40,7 +40,7 @@ class ClientService:
                 .select("*")
                 .eq("whatsapp_number", phone)
                 .eq("active", True)
-                .single()
+                .maybe_single()
                 .execute()
             )
 

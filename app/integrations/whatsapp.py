@@ -14,6 +14,10 @@ class WhatsAppClient:
         self.base_url = f"https://graph.facebook.com/v19.0/{self.phone_number_id}/messages"
 
     async def send_message(self, to: str, text: str) -> None:
+
+        if not to.startswith("+"):
+            to = f"+{to}"        
+        # Meta requires E.164 format with + prefix
         if len(text) > 4096:
             logger.warning("Message to %s over 4096 chars, truncating.", to)
             text = text[:4096]

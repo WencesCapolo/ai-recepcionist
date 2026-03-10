@@ -14,10 +14,15 @@ class WhatsAppClient:
         self.base_url = f"https://graph.facebook.com/v19.0/{self.phone_number_id}/messages"
 
     async def send_message(self, to: str, text: str) -> None:
-
+        # Meta requires E.164 format with + prefix
         if not to.startswith("+"):
             to = f"+{to}"        
-        # Meta requires E.164 format with + prefix
+
+        # Argentina-specific: Meta webhooks deliver numbers as +549XXXXXXXXXX
+        # but the sending API requires +54XXXXXXXXXX (no 9 after country code)
+        if to.startswith("+549"):
+            to = "+54" + to[4:]
+
         if len(text) > 4096:
             logger.warning("Message to %s over 4096 chars, truncating.", to)
             text = text[:4096]

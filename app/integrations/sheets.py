@@ -48,27 +48,27 @@ class SheetsClient:
     ) -> Optional[dict]:
         """
         Fuzzy search for a product by name.
-    Returns the best matching row above 70% similarity, or None.
-    """
-    rows = self.get_all_rows(sheet_id, worksheet)
-    if not rows:
-        return None
+        Returns the best matching row above 70% similarity, or None.
+        """
+        rows = self.get_all_rows(sheet_id, worksheet)
+        if not rows:
+            return None
 
-    names = [str(r.get("producto", "")) for r in rows]
-    match = process.extractOne(
-        product_name,
-        names,
-        scorer=fuzz.partial_ratio,
-        score_cutoff=70,
-    )
-    if not match:
-        return None
+        names = [str(r.get("producto", "")) for r in rows]
+        match = process.extractOne(
+            product_name,
+            names,
+            scorer=fuzz.partial_ratio,
+            score_cutoff=70,
+        )
+        if not match:
+            return None
 
-    matched_name = match[0]
-    for i, name in enumerate(names):
-        if name == matched_name:
-            return rows[i]
-    return None
+        matched_name = match[0]
+        for i, name in enumerate(names):
+            if name == matched_name:
+                return rows[i]
+        return None
 
 @lru_cache
 def get_sheets_client() -> SheetsClient:

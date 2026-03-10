@@ -18,7 +18,7 @@ def get_supabase() -> Client:
 
 @lru_cache
 def get_redis() -> Redis:
-    return Redis(url=settings.redis_url, token=settings.redis_token)
+    return Redis(url=settings.UPSTASH_REDIS_REST_URL, token=settings.UPSTASH_REDIS_REST_TOKEN)
 
 def get_client_service(
     supabase: Annotated[Client, Depends(get_supabase)],

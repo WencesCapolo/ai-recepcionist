@@ -14,7 +14,6 @@ def create_app() -> FastAPI:
     if settings.logfire_token:
         logfire.configure(token=settings.logfire_token)
         logfire.instrument_openai()
-        logfire.instrument_redis()
         logfire.instrument_httpx()
 
     app_instance = FastAPI()

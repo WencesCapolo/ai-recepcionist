@@ -31,22 +31,28 @@ def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
     def handler(product: str) -> str:
         if not config.sheet_id:
             return "No hay información de precios disponible."
-        row = sheets.find_product(config.sheet_id, product)
-        if not row:
-            return f"No encontré el producto '{product}'. Podés preguntar por todos los productos disponibles."
-        precio = int(row['precio'])
-        return f"{row['producto']}: ${precio:,} por {row['unidad']}."
+
+        rows = sheets.find_products(config.sheet_id, product)
+        if not rows:
+            return f"No encontré '{product}' en el catálogo."
+
+        if len(rows) == 1:
+            row = rows[0]
+            return f"{row['producto']}: ${int(row['precio']):,} por {row['unidad']}."
+
+        lines = [f"{r['producto']}: ${int(r['precio']):,} por {r['unidad']}" for r in rows]
+        return "\n".join(lines)
 
     return {
         "definition": {
             "name": "get_price",
-            "description": "Consulta el precio de un producto específico.",
+            "description": "Consulta el precio de un producto. Si hay varias variantes, devuelve todos los precios.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "product": {
                         "type": "string",
-                        "description": "Nombre del producto a consultar",
+                        "description": "Nombre o categoría del producto (ej: 'tornillo', 'pintura')",
                     }
                 },
                 "required": ["product"],
@@ -60,24 +66,41 @@ def _make_get_stock(config: ClientConfig, sheets: SheetsClient) -> dict:
     def handler(product: str) -> str:
         if not config.sheet_id:
             return "No hay información de stock disponible."
-        row = sheets.find_product(config.sheet_id, product)
-        if not row:
-            return f"No encontré el producto '{product}'."
-        stock = int(row["stock"])
-        if stock == 0:
-            return f"{row['producto']}: sin stock por el momento."
-        return f"{row['producto']}: hay {stock} {row['unidad']}{'s' if stock > 1 else ''} en stock."
+
+        rows = sheets.find_products(config.sheet_id, product)
+        if not rows:
+            return f"No encontré '{product}' en el catálogo."
+
+        if len(rows) == 1:
+            row = rows[0]
+            stock = int(row["stock"])
+            if stock == 0:
+                return f"{row['producto']}: sin stock por el momento."
+            return f"Sí, tenemos {row['producto']}."
+
+        # Multiple variants — list them without quantities
+        in_stock = [r for r in rows if int(r["stock"]) > 0]
+        out_of_stock = [r for r in rows if int(r["stock"]) == 0]
+
+        if not in_stock:
+            return f"No tenemos {product} en stock en este momento."
+
+        variant_names = ", ".join(r["producto"] for r in in_stock)
+        result = f"Sí, tenemos: {variant_names}."
+        if out_of_stock:
+            result += f" Sin stock: {', '.join(r['producto'] for r in out_of_stock)}."
+        return result
 
     return {
         "definition": {
             "name": "get_stock",
-            "description": "Consulta la disponibilidad de stock de un producto.",
+            "description": "Consulta si hay stock de un producto. Si hay varias variantes, devuelve todas.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "product": {
                         "type": "string",
-                        "description": "Nombre del producto a consultar",
+                        "description": "Nombre o categoría del producto (ej: 'tornillo', 'pintura', 'cable')",
                     }
                 },
                 "required": ["product"],

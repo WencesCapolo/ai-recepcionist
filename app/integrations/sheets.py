@@ -70,6 +70,28 @@ class SheetsClient:
                 return rows[i]
         return None
 
+    def find_products(
+        self, sheet_id: str, product_name: str, worksheet: str = "productos"
+    ) -> list[dict]:
+        """
+        Returns ALL rows that fuzzy-match the product name.
+        Used for category-style queries like 'tornillos' → [6x50, 8x70].
+        """
+        rows = self.get_all_rows(sheet_id, worksheet)
+        if not rows:
+            return []
+
+        names = [str(r.get("producto", "")) for r in rows]
+        results = process.extract(
+            product_name,
+            names,
+            scorer=fuzz.partial_ratio,
+            score_cutoff=70,
+            limit=10,
+        )
+        matched_indices = {names.index(match[0]) for match in results}
+        return [rows[i] for i in sorted(matched_indices)]
+
 @lru_cache
 def get_sheets_client() -> SheetsClient:
     return SheetsClient()

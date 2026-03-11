@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Google
     google_service_account_json: str = ""
 
+    # Observability
+    logfire_token: str = ""
+
     # App
     sentry_dsn: str = ""
     log_level: str = "INFO"

@@ -10,14 +10,17 @@ def create_app() -> FastAPI:
         sentry_sdk.init(dsn=settings.sentry_dsn)
         
     logging.basicConfig(level=settings.log_level)
-    
-    logfire.configure()
-    logfire.instrument_openai()
-    logfire.instrument_redis()
-    logfire.instrument_httpx()
+
+    if settings.logfire_token:
+        logfire.configure(token=settings.logfire_token)
+        logfire.instrument_openai()
+        logfire.instrument_redis()
+        logfire.instrument_httpx()
 
     app_instance = FastAPI()
-    logfire.instrument_fastapi(app_instance)
+
+    if settings.logfire_token:
+        logfire.instrument_fastapi(app_instance)
     
     app_instance.include_router(webhook_router)
     

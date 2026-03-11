@@ -10,6 +10,7 @@ Exported interface:
 
 import json
 import logging
+import logfire
 from typing import TypedDict, Optional
 
 from langgraph.graph import StateGraph, END
@@ -64,58 +65,60 @@ def _make_agent_node(client: AsyncOpenAI):
     """Returns an async node function that calls the LLM."""
 
     async def agent_node(state: _AgentState) -> dict:
-        kwargs: dict = {
-            "model": "gpt-4o-mini",
-            "messages": state["messages"],
-        }
-        if state["tool_defs"]:
-            kwargs["tools"] = state["tool_defs"]
-            kwargs["tool_choice"] = "auto"
+        iteration = state["iterations"]
+        with logfire.span("agent_iteration", iteration=iteration):
+            kwargs: dict = {
+                "model": "gpt-4o-mini",
+                "messages": state["messages"],
+            }
+            if state["tool_defs"]:
+                kwargs["tools"] = state["tool_defs"]
+                kwargs["tool_choice"] = "auto"
 
-        response = await client.chat.completions.create(**kwargs)
-        message = response.choices[0].message
+            response = await client.chat.completions.create(**kwargs)
+            message = response.choices[0].message
 
-        if message.tool_calls:
-            # Append the assistant message (with tool_calls) to the history.
-            # OpenAI requires this before the tool result messages.
-            state["messages"].append({
-                "role": "assistant",
-                "content": message.content,  # may be None
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in message.tool_calls
-                ],
-            })
+            if message.tool_calls:
+                tool_names = [tc.function.name for tc in message.tool_calls]
+                logfire.info("agent_tool_calls", tools=tool_names, iteration=iteration)
+                # Append the assistant message (with tool_calls) to the history.
+                # OpenAI requires this before the tool result messages.
+                state["messages"].append({
+                    "role": "assistant",
+                    "content": message.content,  # may be None
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in message.tool_calls
+                    ],
+                })
+                return {
+                    "messages": state["messages"],
+                    "iterations": state["iterations"],
+                    "final_reply": "",
+                    "_pending_tool_calls": message.tool_calls,
+                    "used_tools": state.get("used_tools", []) + tool_names,
+                }
+
+            # Text response — agent is done.
+            reply = (message.content or "").strip()
+
+            stop_reason = response.choices[0].finish_reason
+            logger.info(f"Agent loop iteration {iteration}, stop_reason={stop_reason}, content_types={['text' if message.content else 'None']}")
+
             return {
                 "messages": state["messages"],
                 "iterations": state["iterations"],
-                "final_reply": "",
-                "_pending_tool_calls": message.tool_calls,
-                "used_tools": state.get("used_tools", []) + [tc.function.name for tc in message.tool_calls],
+                "final_reply": reply,
+                "_pending_tool_calls": [],
+                "used_tools": state.get("used_tools", []),
             }
-
-        # Text response — agent is done.
-        reply = (message.content or "").strip()
-        
-        iteration = state["iterations"]
-        stop_reason = response.choices[0].finish_reason
-        # Adapted the log line for OpenAI's response structure to avoid crashes (as response.content and b.type are for Anthropic)
-        logger.info(f"Agent loop iteration {iteration}, stop_reason={stop_reason}, content_types={['text' if message.content else 'None']}")
-        
-        return {
-            "messages": state["messages"],
-            "iterations": state["iterations"],
-            "final_reply": reply,
-            "_pending_tool_calls": [],
-            "used_tools": state.get("used_tools", []),
-        }
 
     return agent_node
 
@@ -133,16 +136,17 @@ def _make_tools_node():
             except json.JSONDecodeError:
                 args = {}
 
-            handler = state["handler_map"].get(name)
-            if handler is None:
-                result = f"Error: herramienta '{name}' no encontrada."
-                logger.warning("Tool '%s' not found in handler_map", name)
-            else:
-                try:
-                    result = handler(**args)
-                except Exception as exc:
-                    result = f"Error al ejecutar la herramienta: {exc}"
-                    logger.exception("Tool '%s' raised an exception", name)
+            with logfire.span("tool_call", tool=name, iteration=state["iterations"]):
+                handler = state["handler_map"].get(name)
+                if handler is None:
+                    result = f"Error: herramienta '{name}' no encontrada."
+                    logger.warning("Tool '%s' not found in handler_map", name)
+                else:
+                    try:
+                        result = handler(**args)
+                    except Exception as exc:
+                        result = f"Error al ejecutar la herramienta: {exc}"
+                        logger.exception("Tool '%s' raised an exception", name)
 
             state["messages"].append({
                 "role": "tool",

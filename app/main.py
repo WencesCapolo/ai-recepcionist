@@ -1,4 +1,5 @@
 import logging
+import logfire
 from fastapi import FastAPI
 from app.config import settings
 from app.webhook.router import router as webhook_router
@@ -10,7 +11,13 @@ def create_app() -> FastAPI:
         
     logging.basicConfig(level=settings.log_level)
     
+    logfire.configure()
+    logfire.instrument_openai()
+    logfire.instrument_redis()
+    logfire.instrument_httpx()
+
     app_instance = FastAPI()
+    logfire.instrument_fastapi(app_instance)
     
     app_instance.include_router(webhook_router)
     

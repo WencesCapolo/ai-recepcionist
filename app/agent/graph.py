@@ -143,7 +143,11 @@ def _make_tools_node():
                     logger.warning("Tool '%s' not found in handler_map", name)
                 else:
                     try:
-                        result = handler(**args)
+                        import inspect
+                        if inspect.iscoroutinefunction(handler):
+                            result = await handler(**args)
+                        else:
+                            result = handler(**args)
                     except Exception as exc:
                         result = f"Error al ejecutar la herramienta: {exc}"
                         logger.exception("Tool '%s' raised an exception", name)

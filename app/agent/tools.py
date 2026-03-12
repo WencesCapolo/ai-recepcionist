@@ -1,9 +1,11 @@
 import logging
 from typing import Optional
 
+from rapidfuzz import process, fuzz
+
 from app.clients.models import ClientConfig
 from app.integrations.sheets import SheetsClient
-from rapidfuzz import process, fuzz
+from app.integrations.mercadopago import MercadoPagoClient, MercadoPagoError
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,10 @@ def build_tools(config: ClientConfig, sheets: SheetsClient) -> list:
         "get_products_by_category": _make_get_products_by_category(config, sheets),
         "get_hours": _make_get_hours(config),
     }
+    
+    if config.mp_access_token:
+        all_tools["generate_payment_link"] = _make_generate_payment_link(config, sheets)
+        
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
 
 
@@ -214,6 +220,91 @@ def _make_get_products_by_category(config: ClientConfig, sheets: SheetsClient) -
                     }
                 },
                 "required": ["category"],
+            },
+        },
+        "handler": handler,
+    }
+
+
+def _parse_price(raw: str) -> float:
+    """Parses ARS price strings like '$1.250,50' or '1250.50' → float."""
+    cleaned = str(raw).strip().replace("$", "").replace(" ", "")
+    # ARS format: dots are thousands separators, comma is decimal
+    if "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    return float(cleaned)
+
+
+def _make_generate_payment_link(config: ClientConfig, sheets: SheetsClient) -> dict:
+    assert config.mp_access_token is not None, "mp_access_token is required"
+    mp = MercadoPagoClient(config.mp_access_token)
+
+    async def handler(product: str, quantity: int) -> str:
+        if not config.sheet_id:
+            return "No hay catálogo disponible."
+
+        # 1. Find product in sheet
+        rows = sheets.find_products(config.sheet_id, product)
+
+        if not rows:
+            return f"No encontré el producto '{product}' en el catálogo. Verificá el nombre e intentá de nuevo."
+
+        # 2. If multiple variants, ask customer to be specific
+        if len(rows) > 1:
+            options = "\n".join(f"- {r['producto']}" for r in rows)
+            return (
+                f"Encontré varias variantes de '{product}'. "
+                f"Especificá cuál querés:\n{options}"
+            )
+
+        row = rows[0]
+
+        # 3. Parse price
+        try:
+            unit_price = _parse_price(str(row["precio"]))
+        except ValueError as e:
+            logger.error("Price parse error for product '%s': %s", row["producto"], e)
+            return "Hubo un problema con el precio del producto. Llamá al local para coordinar el pago."
+
+        # 4. Call MercadoPago
+        try:
+            preference = await mp.create_payment_link(
+                title=row["producto"],
+                unit_price=unit_price,
+                quantity=quantity,
+            )
+        except MercadoPagoError as e:
+            logger.error("MercadoPago error for product '%s': %s", row["producto"], e)
+            return "No pude generar el link de pago en este momento. Intentá más tarde o llamá al local."
+
+        total = unit_price * quantity
+        return (
+            f"Link de pago para {quantity}x {row['producto']} (total: ${total:,.0f} ARS):\n"
+            f"{preference.init_point}"
+        )
+
+    return {
+        "definition": {
+            "name": "generate_payment_link",
+            "description": (
+                "Genera un link de pago de MercadoPago para un producto. "
+                "Usá esta herramienta SOLO si el cliente dijo explícitamente que quiere pagar o comprar, "
+                "Y ya confirmó el producto exacto Y la cantidad."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "product": {
+                        "type": "string",
+                        "description": "Nombre exacto del producto a comprar",
+                    },
+                    "quantity": {
+                        "type": "integer",
+                        "description": "Cantidad de unidades",
+                        "minimum": 1,
+                    },
+                },
+                "required": ["product", "quantity"],
             },
         },
         "handler": handler,

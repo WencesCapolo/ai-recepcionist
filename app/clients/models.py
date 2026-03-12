@@ -12,3 +12,4 @@ class ClientConfig(BaseModel):
     sheet_id: Optional[str]
     prompt_version: int
     active: bool
+    mp_access_token: Optional[str] = None 

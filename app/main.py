@@ -6,7 +6,7 @@ from app.webhook.router import router as webhook_router
 
 def create_app() -> FastAPI:
     if settings.sentry_dsn:
-        import sentry_sdk
+        import sentry_sdk  # type: ignore[import-untyped,import-not-found]
         sentry_sdk.init(dsn=settings.sentry_dsn)
         
     logging.basicConfig(level=settings.log_level)

@@ -7,6 +7,7 @@ awaited in the hot path and must never let exceptions propagate.
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import cast
 
 from supabase import Client
 
@@ -46,7 +47,7 @@ class ConversationService:
             )
 
             if response.data:
-                conversation_id: str = response.data[0]["id"]
+                conversation_id: str = cast(dict, response.data[0])["id"]
                 self._db.table("conversations").update(
                     {"last_message_at": now}
                 ).eq("id", conversation_id).execute()

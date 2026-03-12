@@ -248,7 +248,7 @@ async def run_agent(
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     graph = _build_graph(client)
 
-    initial_state: dict = {
+    initial_state: _AgentState = {
         "messages": messages,
         "tool_defs": tool_defs,
         "handler_map": handler_map,

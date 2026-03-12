@@ -222,6 +222,9 @@ async def handle_message(
     # ------------------------------------------------------------------
     # Step 4: Push to debounce buffer
     # ------------------------------------------------------------------
+    # At this point message_text is guaranteed to be set:
+    # text messages always have it; audio messages either got transcribed above or returned.
+    assert message_text is not None, "message_text must be set before pushing to buffer"
     conversation_context.push_to_buffer(client_id, user_phone, message_id, message_text)
 
     # ------------------------------------------------------------------

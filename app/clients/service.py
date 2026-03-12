@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Optional
+from typing import Optional, cast
 
 from upstash_redis import Redis
 from supabase import Client
@@ -44,11 +44,12 @@ class ClientService:
                 .execute()
             )
 
-            if not result.data:
+            if result is None or not result.data:
                 logger.warning(f"No active client found for phone {phone}")
                 return None
 
-            config = ClientConfig(**result.data)
+            data = cast(dict, result.data)
+            config = ClientConfig(**data)
 
             # 3. Write to cache
             try:

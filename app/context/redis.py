@@ -139,7 +139,7 @@ class ConversationContext:
         pipe = self._redis.pipeline()
         pipe.lrange(buffer_key, 0, -1)
         pipe.delete(buffer_key)
-        results = pipe.execute()  # type: ignore[call-arg]
+        results = pipe.exec()
         raw_messages = results[0] or []
         return [json.loads(m) for m in raw_messages]
 

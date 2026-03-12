@@ -30,7 +30,7 @@ def get_client_service(
 def get_conversation_context(
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> ConversationContext:
-    return ConversationContext(redis=redis)
+    return ConversationContext(redis_client=redis)
 
 def get_conversation_service(
     supabase: Annotated[Client, Depends(get_supabase)],

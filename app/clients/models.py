@@ -13,3 +13,4 @@ class ClientConfig(BaseModel):
     prompt_version: int
     active: bool
     mp_access_token: Optional[str] = None 
+    mp_sandbox: bool = True

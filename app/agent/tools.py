@@ -237,14 +237,17 @@ def _parse_price(raw: str) -> float:
 
 def _make_generate_payment_link(config: ClientConfig, sheets: SheetsClient) -> dict:
     assert config.mp_access_token is not None, "mp_access_token is required"
-    mp = MercadoPagoClient(config.mp_access_token)
+    mp = MercadoPagoClient(
+        access_token=config.mp_access_token,
+        sandbox=config.mp_sandbox,
+    )
 
     async def handler(product: str, quantity: int) -> str:
         if not config.sheet_id:
             return "No hay catálogo disponible."
 
         # 1. Find product in sheet
-        rows = sheets.find_products(config.sheet_id, product)
+        rows = sheets.find_products(config.sheet_id, product, score_cutoff=85)
 
         if not rows:
             return f"No encontré el producto '{product}' en el catálogo. Verificá el nombre e intentá de nuevo."

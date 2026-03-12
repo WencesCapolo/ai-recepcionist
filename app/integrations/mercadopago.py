@@ -15,8 +15,10 @@ class PaymentPreference:
 
 
 class MercadoPagoClient:
-    def __init__(self, access_token: str) -> None:
+    def __init__(self, access_token: str, sandbox: bool = True) -> None:
         self._access_token = access_token
+        self._sandbox = sandbox
+        logger.info("MP token prefix: %s", self._access_token[:10] if self._access_token else "NONE")
 
     async def create_payment_link(
         self,
@@ -58,8 +60,9 @@ class MercadoPagoClient:
             )
 
         data = response.json()
+        key = "sandbox_init_point" if self._sandbox else "init_point"
         return PaymentPreference(
-            init_point=data["init_point"],
+            init_point=data.get(key) or data["init_point"],
             preference_id=data["id"],
         )
 

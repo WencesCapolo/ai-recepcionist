@@ -44,7 +44,7 @@ class SheetsClient:
             return []
 
     def find_product(
-        self, sheet_id: str, product_name: str, worksheet: str = "productos"
+        self, sheet_id: str, product_name: str, worksheet: str = "productos", score_cutoff: int = 70
     ) -> Optional[dict]:
         """
         Fuzzy search for a product by name.
@@ -71,7 +71,7 @@ class SheetsClient:
         return None
 
     def find_products(
-        self, sheet_id: str, product_name: str, worksheet: str = "productos"
+        self, sheet_id: str, product_name: str, worksheet: str = "productos", score_cutoff: int = 70
     ) -> list[dict]:
         """
         Returns ALL rows that fuzzy-match the product name.
@@ -86,7 +86,7 @@ class SheetsClient:
             product_name,
             names,
             scorer=fuzz.partial_ratio,
-            score_cutoff=70,
+            score_cutoff=score_cutoff,
             limit=10,
         )
         matched_indices = {names.index(match[0]) for match in results}

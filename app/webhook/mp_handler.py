@@ -157,12 +157,19 @@ async def _fetch_mp_resource(path: str, client_service: ClientService) -> dict |
         logger.error("No MP access token available to fetch %s", path)
         return None
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{MP_API_BASE}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{MP_API_BASE}{path}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+    except httpx.TimeoutException:
+        logger.error("MP fetch timed out: %s", path)
+        return None
+    except httpx.RequestError as e:
+        logger.error("MP network error fetching %s: %s", path, e)
+        return None
 
     if response.status_code != 200:
         logger.error("MP API error fetching %s [status=%d]", path, response.status_code)

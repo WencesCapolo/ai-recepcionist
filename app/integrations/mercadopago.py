@@ -47,16 +47,23 @@ class MercadoPagoClient:
             ]
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{MP_API_BASE}/checkout/preferences",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self._access_token}",
-                    "Content-Type": "application/json",
-                },
-                timeout=10.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{MP_API_BASE}/checkout/preferences",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self._access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=10.0,
+                )
+        except httpx.TimeoutException:
+            logger.error("MercadoPago request timed out")
+            raise MercadoPagoError("Timeout al conectar con MercadoPago")
+        except httpx.RequestError as e:
+            logger.error("MercadoPago network error: %s", e)
+            raise MercadoPagoError(f"Error de red al conectar con MercadoPago: {e}")
 
         if response.status_code != 201:
             logger.error(
@@ -76,12 +83,19 @@ class MercadoPagoClient:
         )
         
     async def get_preference(self, preference_id: str) -> PreferenceDetails:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{MP_API_BASE}/checkout/preferences/{preference_id}",
-                headers={"Authorization": f"Bearer {self._access_token}"},
-                timeout=10.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{MP_API_BASE}/checkout/preferences/{preference_id}",
+                    headers={"Authorization": f"Bearer {self._access_token}"},
+                    timeout=10.0,
+                )
+        except httpx.TimeoutException:
+            logger.error("MercadoPago get_preference timed out")
+            raise MercadoPagoError("Timeout al conectar con MercadoPago")
+        except httpx.RequestError as e:
+            logger.error("MercadoPago get_preference network error: %s", e)
+            raise MercadoPagoError(f"Error de red al conectar con MercadoPago: {e}")
  
         if response.status_code != 200:
             logger.error(

@@ -1,7 +1,12 @@
 """
 calendar_tools.py — Anthropic tool factories for the dentist-demo calendar.
 
-Two tools:
+Three tools:
+  get_current_date_hour()
+      Returns the current date and time in Argentina (ART, UTC-3).
+      Call this first whenever the user refers to relative dates like
+      "hoy", "mañana", or "lo más pronto posible".
+
   check_availability(date)
       Shows free morning/afternoon slots for the requested date.
 
@@ -13,10 +18,13 @@ Two tools:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Argentine Standard Time (UTC-3, no DST)
+_ART = timezone(timedelta(hours=-3))
 
 # Spanish month names for friendly output
 _MONTHS_ES = [
@@ -50,14 +58,48 @@ def _friendly_date(d: date) -> str:
 
 def build_calendar_tools(calendar: Any) -> list[dict]:
     """
-    Return the two calendar tool dicts ready to extend build_tools() output.
+    Return all calendar tool dicts ready to extend build_tools() output.
 
     ``calendar`` must be a CalendarMock instance (injected by build_tools).
     """
     return [
+        _make_get_current_date_hour(),
         _make_check_availability(calendar),
         _make_book_appointment(calendar),
     ]
+
+
+# ── get_current_date_hour ─────────────────────────────────────────────────────
+
+
+def _make_get_current_date_hour() -> dict:
+    def handler() -> str:
+        now = datetime.now(_ART)
+        day_name = _DAYS_ES[now.weekday()]
+        month_name = _MONTHS_ES[now.month]
+        return (
+            f"Hoy es {day_name} {now.day} de {month_name} de {now.year} "
+            f"({now.strftime('%Y-%m-%d')}). "
+            f"La hora actual en Argentina es {now.strftime('%H:%M')}."
+        )
+
+    return {
+        "definition": {
+            "name": "get_current_date_hour",
+            "description": (
+                "Devuelve la fecha y hora actual en Argentina (ART, UTC-3). "
+                "Llamá a esta herramienta antes de usar check_availability o "
+                "book_appointment cuando el paciente use referencias relativas "
+                "como 'hoy', 'mañana', 'esta semana' o 'lo más pronto posible'."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        "handler": handler,
+    }
 
 
 # ── check_availability ────────────────────────────────────────────────────────

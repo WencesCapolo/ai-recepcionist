@@ -170,6 +170,40 @@ class CalendarMock:
         )
         return True
 
+    def cancel(self, d: date, time: str) -> bool:
+        """
+        Cancel a previously booked slot.
+
+        Returns True if the booking was found and deleted.
+        Returns False if there was no Redis booking for that slot
+        (pre-seeded slots or already cancelled).
+        Raises CalendarSlotError on infrastructure errors.
+        """
+        if time not in ALL_SLOTS:
+            raise CalendarSlotError(
+                f"El horario '{time}' no es válido. Los turnos son cada 30 minutos."
+            )
+        key = self._redis_key(d.isoformat(), time)
+        try:
+            deleted = self._redis.delete(key)
+            found = deleted == 1
+        except Exception as exc:
+            logger.error(
+                "Redis error cancelling slot %s %s: %s", d.isoformat(), time, exc
+            )
+            raise CalendarSlotError(
+                "No se pudo cancelar el turno por un error interno. Intentá de nuevo."
+            ) from exc
+
+        if found:
+            logger.info(
+                "Slot cancelled [client=%s date=%s time=%s]",
+                self._client_id,
+                d.isoformat(),
+                time,
+            )
+        return found
+
 
 class CalendarSlotError(Exception):
     """Raised for invalid slot inputs or infrastructure errors."""

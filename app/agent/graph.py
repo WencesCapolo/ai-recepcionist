@@ -237,7 +237,7 @@ async def run_agent(
         (handler.py) is responsible for user-facing error messages.
     """
     # Build tool definitions and handler map for this client.
-    raw_tools = build_tools(config, sheets, redis, user_phone)
+    raw_tools = build_tools(config, sheets, redis, user_phone, client_id=str(config.id))
     tool_defs = [_to_openai_tool(t["definition"]) for t in raw_tools]
     handler_map: dict = {t["definition"]["name"]: t["handler"] for t in raw_tools}
 

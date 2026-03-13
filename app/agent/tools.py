@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 MP_PAYMENT_TTL = 86400
 
-def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, user_phone: str = "") -> list:
+def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, user_phone: str = "", client_id: str = "") -> list:
     """
     Returns the list of tool definitions enabled for this client.
     Only tools listed in config.tools_enabled are included.
@@ -37,7 +37,24 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
             client_id=str(config.id),
             user_phone=user_phone,
         )
-        
+
+    # ── Calendar tools ────────────────────────────────────────────────────────
+    if (
+        (
+            "check_availability" in config.tools_enabled
+            or "book_appointment" in config.tools_enabled
+        )
+        and redis is not None
+    ):
+        from app.agent.calendar_tools import build_calendar_tools
+        from app.integrations.calendar_mock import CalendarMock
+
+        _calendar = CalendarMock(redis=redis, client_id=client_id or str(config.id))
+        calendar_tool_list = build_calendar_tools(_calendar)
+        # Index by name so the tools_enabled filter below works uniformly
+        for ct in calendar_tool_list:
+            all_tools[ct["definition"]["name"]] = ct
+
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
 
 

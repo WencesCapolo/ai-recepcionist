@@ -14,6 +14,15 @@ class PaymentPreference:
     preference_id: str
 
 
+@dataclass
+class PreferenceDetails:
+    preference_id: str
+    title: str
+    quantity: int
+    unit_price: float
+    total: float
+
+
 class MercadoPagoClient:
     def __init__(self, access_token: str, sandbox: bool = True) -> None:
         self._access_token = access_token
@@ -64,6 +73,37 @@ class MercadoPagoClient:
         return PaymentPreference(
             init_point=data.get(key) or data["init_point"],
             preference_id=data["id"],
+        )
+        
+    async def get_preference(self, preference_id: str) -> PreferenceDetails:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{MP_API_BASE}/checkout/preferences/{preference_id}",
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=10.0,
+            )
+ 
+        if response.status_code != 200:
+            logger.error(
+                "MercadoPago get_preference error [status=%d body=%s]",
+                response.status_code,
+                response.text,
+            )
+            raise MercadoPagoError(
+                f"No se pudo obtener la preferencia (status {response.status_code})"
+            )
+ 
+        data = response.json()
+        item = data["items"][0]
+        quantity = item["quantity"]
+        unit_price = item["unit_price"]
+ 
+        return PreferenceDetails(
+            preference_id=preference_id,
+            title=item["title"],
+            quantity=quantity,
+            unit_price=unit_price,
+            total=unit_price * quantity,
         )
 
 

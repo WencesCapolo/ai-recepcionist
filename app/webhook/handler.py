@@ -292,6 +292,8 @@ async def handle_message(
                             history=history,
                             user_message=combined_text,
                             sheets=sheets_client,
+                            redis=conversation_context._redis,
+                            user_phone=user_phone,
                         )
                     agent_succeeded = True
 

@@ -11,7 +11,7 @@ Exported interface:
 import json
 import logging
 import logfire
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, Any
 
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
@@ -216,6 +216,8 @@ async def run_agent(
     history: ConversationHistory,
     user_message: str,
     sheets: SheetsClient,
+    redis: Optional[Any] = None,
+    user_phone: str = "",
 ) -> tuple[str, Optional[str]]:
     """Run the agent loop for a single user turn.
 
@@ -235,7 +237,7 @@ async def run_agent(
         (handler.py) is responsible for user-facing error messages.
     """
     # Build tool definitions and handler map for this client.
-    raw_tools = build_tools(config, sheets)
+    raw_tools = build_tools(config, sheets, redis, user_phone)
     tool_defs = [_to_openai_tool(t["definition"]) for t in raw_tools]
     handler_map: dict = {t["definition"]["name"]: t["handler"] for t in raw_tools}
 

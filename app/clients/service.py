@@ -63,6 +63,62 @@ class ClientService:
             logger.error(f"Supabase lookup failed for phone {phone}: {e}")
             return None
 
+    async def get_client_by_id(self, client_id: str) -> Optional[ClientConfig]:
+        """Load client config by UUID. Used by mp_handler to fetch business name."""
+        cache_key = f"config:id:{client_id}"
+
+        try:
+            cached = self.redis.get(cache_key)
+            if cached:
+                return ClientConfig(**json.loads(cached))
+        except Exception as e:
+            logger.warning(f"Redis cache read failed for client_id {client_id}: {e}")
+
+        try:
+            result = (
+                self.supabase.table("clients")
+                .select("*")
+                .eq("id", client_id)
+                .eq("active", True)
+                .maybe_single()
+                .execute()
+            )
+
+            if result is None or not result.data:
+                logger.warning(f"No active client found for id {client_id}")
+                return None
+
+            data = cast(dict, result.data)
+            config = ClientConfig(**data)
+
+            try:
+                self.redis.set(cache_key, config.model_dump_json(), ex=CACHE_TTL)
+            except Exception as e:
+                logger.warning(f"Redis cache write failed for client_id {client_id}: {e}")
+
+            return config
+
+        except Exception as e:
+            logger.error(f"Supabase lookup failed for client_id {client_id}: {e}")
+            return None
+
+    async def get_any_mp_token(self) -> Optional[str]:
+        """Return the MP access token from the first active client that has one."""
+        try:
+            result = (
+                self.supabase.table("clients")
+                .select("mp_access_token")
+                .eq("active", True)
+                .not_.is_("mp_access_token", "null")
+                .limit(1)
+                .execute()
+            )
+            if result and result.data:
+                return cast(dict, result.data[0]).get("mp_access_token")
+        except Exception as e:
+            logger.error(f"Supabase lookup failed for get_any_mp_token: {e}")
+        return None
+
     def invalidate_client_cache(self, phone: str) -> None:
         """Call this if you update a client config and need immediate effect."""
         try:

@@ -3,6 +3,7 @@ import logfire
 from fastapi import FastAPI
 from app.config import settings
 from app.webhook.router import router as webhook_router
+from app.webhook.mp_router import router as mp_router
 
 def create_app() -> FastAPI:
     if settings.sentry_dsn:
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
         logfire.instrument_fastapi(app_instance)
     
     app_instance.include_router(webhook_router)
+    app_instance.include_router(mp_router)
     
     @app_instance.get("/health")
     async def health_check():

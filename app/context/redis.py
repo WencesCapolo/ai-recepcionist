@@ -140,7 +140,7 @@ class ConversationContext:
         pipe.lrange(buffer_key, 0, -1)
         pipe.delete(buffer_key)
         results = pipe.exec()
-        raw_messages = results[0] or []
+        raw_messages: list = results[0] if isinstance(results[0], list) else []
         return [json.loads(m) for m in raw_messages]
 
     # ------------------------------------------------------------------

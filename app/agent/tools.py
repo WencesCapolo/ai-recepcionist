@@ -1,7 +1,9 @@
+import json
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from rapidfuzz import process, fuzz
+from upstash_redis import Redis
 
 from app.clients.models import ClientConfig
 from app.integrations.sheets import SheetsClient
@@ -9,8 +11,9 @@ from app.integrations.mercadopago import MercadoPagoClient, MercadoPagoError
 
 logger = logging.getLogger(__name__)
 
+MP_PAYMENT_TTL = 86400
 
-def build_tools(config: ClientConfig, sheets: SheetsClient) -> list:
+def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, user_phone: str = "") -> list:
     """
     Returns the list of tool definitions enabled for this client.
     Only tools listed in config.tools_enabled are included.
@@ -24,8 +27,16 @@ def build_tools(config: ClientConfig, sheets: SheetsClient) -> list:
         "get_hours": _make_get_hours(config),
     }
     
-    if config.mp_access_token:
-        all_tools["generate_payment_link"] = _make_generate_payment_link(config, sheets)
+    if config.mp_access_token and redis and user_phone and config.sheet_id:
+        all_tools["generate_payment_link"] = _build_generate_payment_link(
+            sheets=sheets,
+            sheet_id=config.sheet_id,
+            access_token=config.mp_access_token,
+            sandbox=config.mp_sandbox,
+            redis=redis,
+            client_id=str(config.id),
+            user_phone=user_phone,
+        )
         
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
 
@@ -235,41 +246,47 @@ def _parse_price(raw: str) -> float:
     return float(cleaned)
 
 
-def _make_generate_payment_link(config: ClientConfig, sheets: SheetsClient) -> dict:
-    assert config.mp_access_token is not None, "mp_access_token is required"
-    mp = MercadoPagoClient(
-        access_token=config.mp_access_token,
-        sandbox=config.mp_sandbox,
-    )
-
-    async def handler(product: str, quantity: int) -> str:
-        if not config.sheet_id:
-            return "No hay catálogo disponible."
-
-        # 1. Find product in sheet
-        rows = sheets.find_products(config.sheet_id, product, score_cutoff=85)
-
+# ── generate_payment_link ─────────────────────────────────────────────────────
+ 
+def _build_generate_payment_link(
+    sheets: SheetsClient,
+    sheet_id: str,
+    access_token: str,
+    sandbox: bool,
+    redis: Redis,
+    client_id: str,
+    user_phone: str,
+) -> dict:
+    mp = MercadoPagoClient(access_token=access_token, sandbox=sandbox)
+ 
+    async def generate_payment_link(product: str, quantity: int) -> str:
+        # 1. Find product — higher cutoff to avoid variant bleed
+        rows = sheets.find_products(sheet_id, product, score_cutoff=85)
+ 
         if not rows:
-            return f"No encontré el producto '{product}' en el catálogo. Verificá el nombre e intentá de nuevo."
-
-        # 2. If multiple variants, ask customer to be specific
+            # Fallback to standard cutoff before giving up
+            rows = sheets.find_products(sheet_id, product)
+            if not rows:
+                return f"No encontré el producto '{product}' en el catálogo."
+ 
+        # 2. Multiple variants — ask customer to be specific
         if len(rows) > 1:
             options = "\n".join(f"- {r['producto']}" for r in rows)
             return (
                 f"Encontré varias variantes de '{product}'. "
                 f"Especificá cuál querés:\n{options}"
             )
-
+ 
         row = rows[0]
-
+ 
         # 3. Parse price
         try:
             unit_price = _parse_price(str(row["precio"]))
         except ValueError as e:
-            logger.error("Price parse error for product '%s': %s", row["producto"], e)
+            logger.error("Price parse error for '%s': %s", row["producto"], e)
             return "Hubo un problema con el precio del producto. Llamá al local para coordinar el pago."
-
-        # 4. Call MercadoPago
+ 
+        # 4. Create MP preference
         try:
             preference = await mp.create_payment_link(
                 title=row["producto"],
@@ -277,15 +294,32 @@ def _make_generate_payment_link(config: ClientConfig, sheets: SheetsClient) -> d
                 quantity=quantity,
             )
         except MercadoPagoError as e:
-            logger.error("MercadoPago error for product '%s': %s", row["producto"], e)
+            logger.error("MercadoPago error for '%s': %s", row["producto"], e)
             return "No pude generar el link de pago en este momento. Intentá más tarde o llamá al local."
-
+ 
+        # 5. Store metadata in Redis so mp_handler can look up who paid
+        payment_meta = {
+            "user_phone": user_phone,
+            "client_id": client_id,
+            "product": row["producto"],
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total": unit_price * quantity,
+        }
+        redis_key = f"mp_payment:{preference.preference_id}"
+        redis.set(redis_key, json.dumps(payment_meta), ex=MP_PAYMENT_TTL)
+        logger.info(
+            "Stored MP payment meta [key=%s phone=%s product=%s]",
+            redis_key, user_phone, row["producto"],
+        )
+ 
         total = unit_price * quantity
         return (
-            f"Link de pago para {quantity}x {row['producto']} (total: ${total:,.0f} ARS):\n"
-            f"{preference.init_point}"
+            f"Acá tenés el link para pagar {quantity}x {row['producto']} "
+            f"(total: ${total:,.0f} ARS):\n{preference.init_point}\n"
+            f"Cuando lo pagues, pasás a retirarlo en el local."
         )
-
+ 
     return {
         "definition": {
             "name": "generate_payment_link",
@@ -310,5 +344,6 @@ def _make_generate_payment_link(config: ClientConfig, sheets: SheetsClient) -> d
                 "required": ["product", "quantity"],
             },
         },
-        "handler": handler,
+        "handler": generate_payment_link,
     }
+ 

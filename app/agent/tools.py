@@ -61,6 +61,14 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
 # --- Tool factories ---
 # Each returns a dict with `definition` (sent to AI API) and `handler` (called on tool_use)
 
+def _format_price(precio: Any) -> str:
+    """Format price, handling non-numeric values like 'por encargue' or 'sin stock'."""
+    try:
+        return f"${float(precio):,.0f}"
+    except (ValueError, TypeError):
+        return str(precio)
+
+
 def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
     def handler(product: str) -> str:
         if not config.sheet_id:
@@ -72,9 +80,10 @@ def _make_get_price(config: ClientConfig, sheets: SheetsClient) -> dict:
 
         if len(rows) == 1:
             row = rows[0]
-            return f"{row['producto']}: ${int(row['precio']):,} por {row['unidad']}."
+            precio_fmt = _format_price(row['precio'])
+            return f"{row['producto']}: {precio_fmt} por {row['unidad']}."
 
-        lines = [f"{r['producto']}: ${int(r['precio']):,} por {r['unidad']}" for r in rows]
+        lines = [f"{r['producto']}: {_format_price(r['precio'])} por {r['unidad']}" for r in rows]
         return "\n".join(lines)
 
     return {
@@ -156,7 +165,8 @@ def _make_get_all_products(config: ClientConfig, sheets: SheetsClient) -> dict:
         by_category: dict[str, list[str]] = {}
         for row in rows:
             cat = row.get("categoria", "General")
-            product_line = f"  • {row['producto']} — ${row['precio']:,} por {row['unidad']}"
+            precio_fmt = _format_price(row['precio'])
+            product_line = f"  • {row['producto']} — {precio_fmt} por {row['unidad']}"
             by_category.setdefault(cat, []).append(product_line)
 
         lines = ["Estos son nuestros productos:\n"]
@@ -230,8 +240,8 @@ def _make_get_products_by_category(config: ClientConfig, sheets: SheetsClient) -
 
         lines = [f"Productos en la categoría '{matched_category}':\n"]
         for row in matching_rows:
-            precio = int(row["precio"])
-            lines.append(f"  • {row['producto']} — ${precio:,} por {row['unidad']}")
+            precio_fmt = _format_price(row["precio"])
+            lines.append(f"  • {row['producto']} — {precio_fmt} por {row['unidad']}")
 
         return "\n".join(lines).strip()
 

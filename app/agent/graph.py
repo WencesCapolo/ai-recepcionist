@@ -11,6 +11,8 @@ Exported interface:
 import json
 import logging
 import logfire
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TypedDict, Optional, Any
 
 from langgraph.graph import StateGraph, END
@@ -19,6 +21,7 @@ from openai import AsyncOpenAI
 from app.agent.prompts import build_system_prompt
 from app.agent.tools import build_tools
 from app.clients.models import ClientConfig
+from app.config import settings
 from app.conversations.models import ConversationHistory
 from app.integrations.sheets import SheetsClient
 
@@ -244,11 +247,8 @@ async def run_agent(
     # Build the message list from the persisted history.
     # Only user/assistant messages are stored in history; tool results are
     # ephemeral (they live only within this agent run).
-    from datetime import datetime
-    import pytz
-
     system_prompt = build_system_prompt(config)
-    tz = pytz.timezone("America/Argentina/Buenos_Aires")
+    tz = ZoneInfo("America/Argentina/Buenos_Aires")
     now = datetime.now(tz).strftime("%A %d de %B de %Y, %H:%M")
     fresh_system = f"Fecha y hora actual en Argentina: {now}.\n\n{system_prompt}"
 
@@ -257,7 +257,7 @@ async def run_agent(
         if msg.role in ("user", "assistant"):
             messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": user_message})
-    from app.config import settings
+
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     graph = _build_graph(client)
 

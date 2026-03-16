@@ -244,8 +244,15 @@ async def run_agent(
     # Build the message list from the persisted history.
     # Only user/assistant messages are stored in history; tool results are
     # ephemeral (they live only within this agent run).
+    from datetime import datetime
+    import pytz
+
     system_prompt = build_system_prompt(config)
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    tz = pytz.timezone("America/Argentina/Buenos_Aires")
+    now = datetime.now(tz).strftime("%A %d de %B de %Y, %H:%M")
+    fresh_system = f"Fecha y hora actual en Argentina: {now}.\n\n{system_prompt}"
+
+    messages: list[dict] = [{"role": "system", "content": fresh_system}]
     for msg in history.messages:
         if msg.role in ("user", "assistant"):
             messages.append({"role": msg.role, "content": msg.content})

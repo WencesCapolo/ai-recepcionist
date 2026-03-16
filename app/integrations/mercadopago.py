@@ -17,9 +17,7 @@ class PaymentPreference:
 @dataclass
 class PreferenceDetails:
     preference_id: str
-    title: str
-    quantity: int
-    unit_price: float
+    items: list
     total: float
 
 
@@ -31,21 +29,27 @@ class MercadoPagoClient:
 
     async def create_payment_link(
         self,
-        title: str,
-        unit_price: float,
-        quantity: int = 1,
+        items: list[dict],
         currency: str = "ARS",
     ) -> PaymentPreference:
-        payload = {
-            "items": [
-                {
-                    "title": title,
-                    "quantity": quantity,
-                    "unit_price": unit_price,
-                    "currency_id": currency,
-                }
-            ]
-        }
+        """
+        Create a MercadoPago preference with one or more items.
+
+        Each item in `items` must have:
+            - title (str)
+            - quantity (int)
+            - unit_price (float)
+        """
+        mp_items = [
+            {
+                "title": item["title"],
+                "quantity": item["quantity"],
+                "unit_price": item["unit_price"],
+                "currency_id": currency,
+            }
+            for item in items
+        ]
+        payload = {"items": mp_items}
 
         try:
             async with httpx.AsyncClient() as client:
@@ -108,16 +112,13 @@ class MercadoPagoClient:
             )
  
         data = response.json()
-        item = data["items"][0]
-        quantity = item["quantity"]
-        unit_price = item["unit_price"]
- 
+        raw_items = data.get("items", [])
+        total = sum(i["unit_price"] * i["quantity"] for i in raw_items)
+
         return PreferenceDetails(
             preference_id=preference_id,
-            title=item["title"],
-            quantity=quantity,
-            unit_price=unit_price,
-            total=unit_price * quantity,
+            items=raw_items,
+            total=total,
         )
 
 

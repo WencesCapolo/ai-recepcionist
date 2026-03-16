@@ -274,7 +274,7 @@ def _parse_price(raw: str) -> float:
 
 
 # ── generate_payment_link ─────────────────────────────────────────────────────
- 
+
 def _build_generate_payment_link(
     sheets: SheetsClient,
     sheet_id: str,
@@ -285,92 +285,124 @@ def _build_generate_payment_link(
     user_phone: str,
 ) -> dict:
     mp = MercadoPagoClient(access_token=access_token, sandbox=sandbox)
- 
-    async def generate_payment_link(product: str, quantity: int) -> str:
-        # 1. Find product — higher cutoff to avoid variant bleed
-        rows = sheets.find_products(sheet_id, product, score_cutoff=85)
- 
-        if not rows:
-            # Fallback to standard cutoff before giving up
-            rows = sheets.find_products(sheet_id, product)
+
+    async def generate_payment_link(
+        items: list[dict],
+        sucursal: str,
+    ) -> str:
+        """
+        items: [{"product": "medialuna de manteca", "quantity": 12, "unit_price": 350}, ...]
+        sucursal: branch/location name for the confirmation message.
+        """
+        mp_items: list[dict] = []
+        resolved_lines: list[str] = []
+
+        for item in items:
+            product = item.get("product", "")
+            quantity = int(item.get("quantity", 1))
+            # LLM can optionally provide unit_price; we always verify against the catalog.
+            rows = sheets.find_products(sheet_id, product, score_cutoff=85)
+            if not rows:
+                rows = sheets.find_products(sheet_id, product)
             if not rows:
                 return f"No encontré el producto '{product}' en el catálogo."
- 
-        # 2. Multiple variants — ask customer to be specific
-        if len(rows) > 1:
-            options = "\n".join(f"- {r['producto']}" for r in rows)
-            return (
-                f"Encontré varias variantes de '{product}'. "
-                f"Especificá cuál querés:\n{options}"
+
+            if len(rows) > 1:
+                options = "\n".join(f"- {r['producto']}" for r in rows)
+                return (
+                    f"Encontré varias variantes de '{product}'. "
+                    f"Especificá cuál querés:\n{options}"
+                )
+
+            row = rows[0]
+            try:
+                unit_price = _parse_price(str(row["precio"]))
+            except ValueError as e:
+                logger.error("Price parse error for '%s': %s", row["producto"], e)
+                return "Hubo un problema con el precio de un producto. Llamá al local para coordinar el pago."
+
+            mp_items.append({
+                "title": row["producto"],
+                "quantity": quantity,
+                "unit_price": unit_price,
+            })
+            line_total = unit_price * quantity
+            resolved_lines.append(
+                f"  • {quantity}x {row['producto']} — ${line_total:,.0f} ARS"
             )
- 
-        row = rows[0]
- 
-        # 3. Parse price
+
+        # Create a single MP preference with all items
         try:
-            unit_price = _parse_price(str(row["precio"]))
-        except ValueError as e:
-            logger.error("Price parse error for '%s': %s", row["producto"], e)
-            return "Hubo un problema con el precio del producto. Llamá al local para coordinar el pago."
- 
-        # 4. Create MP preference
-        try:
-            preference = await mp.create_payment_link(
-                title=row["producto"],
-                unit_price=unit_price,
-                quantity=quantity,
-            )
+            preference = await mp.create_payment_link(items=mp_items)
         except MercadoPagoError as e:
-            logger.error("MercadoPago error for '%s': %s", row["producto"], e)
+            logger.error("MercadoPago error generating multi-item preference: %s", e)
             return "No pude generar el link de pago en este momento. Intentá más tarde o llamá al local."
- 
-        # 5. Store metadata in Redis so mp_handler can look up who paid
+
+        grand_total = sum(i["unit_price"] * i["quantity"] for i in mp_items)
+
+        # Store metadata in Redis
         payment_meta = {
             "user_phone": user_phone,
             "client_id": client_id,
-            "product": row["producto"],
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "total": unit_price * quantity,
+            "sucursal": sucursal,
+            "items": mp_items,
+            "total": grand_total,
         }
         redis_key = f"mp_payment:{preference.preference_id}"
         redis.set(redis_key, json.dumps(payment_meta), ex=MP_PAYMENT_TTL)
         logger.info(
-            "Stored MP payment meta [key=%s phone=%s product=%s]",
-            redis_key, user_phone, row["producto"],
+            "Stored MP payment meta [key=%s phone=%s items=%d total=%.2f sucursal=%s]",
+            redis_key, user_phone, len(mp_items), grand_total, sucursal,
         )
- 
-        total = unit_price * quantity
+
+        item_summary = "\n".join(resolved_lines)
         return (
-            f"Acá tenés el link para pagar {quantity}x {row['producto']} "
-            f"(total: ${total:,.0f} ARS):\n{preference.init_point}\n"
+            f"Acá tenés el link para pagar tu pedido en {sucursal}:\n"
+            f"{item_summary}\n"
+            f"*Total: ${grand_total:,.0f} ARS*\n\n"
+            f"{preference.init_point}\n\n"
             f"Cuando lo pagues, pasás a retirarlo en el local."
         )
- 
+
     return {
         "definition": {
             "name": "generate_payment_link",
             "description": (
-                "Genera un link de pago de MercadoPago para un producto. "
+                "Genera un link de pago de MercadoPago para uno o más productos. "
                 "Usá esta herramienta SOLO si el cliente dijo explícitamente que quiere pagar o comprar, "
-                "Y ya confirmó el producto exacto Y la cantidad."
+                "Y ya confirmó todos los productos exactos y las cantidades. "
+                "Pasá todos los items del pedido en una sola llamada."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "product": {
-                        "type": "string",
-                        "description": "Nombre exacto del producto a comprar",
+                    "items": {
+                        "type": "array",
+                        "description": "Lista de productos a incluir en el pedido.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "product": {
+                                    "type": "string",
+                                    "description": "Nombre exacto del producto",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "Cantidad de unidades",
+                                    "minimum": 1,
+                                },
+                            },
+                            "required": ["product", "quantity"],
+                        },
+                        "minItems": 1,
                     },
-                    "quantity": {
-                        "type": "integer",
-                        "description": "Cantidad de unidades",
-                        "minimum": 1,
+                    "sucursal": {
+                        "type": "string",
+                        "description": "Nombre de la sucursal o local donde se retira el pedido",
                     },
                 },
-                "required": ["product", "quantity"],
+                "required": ["items", "sucursal"],
             },
         },
         "handler": generate_payment_link,
     }
- 

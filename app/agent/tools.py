@@ -39,20 +39,27 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
         )
 
     # ── Calendar tools ────────────────────────────────────────────────────────
-    if (
-        (
-            "check_availability" in config.tools_enabled
-            or "book_appointment" in config.tools_enabled
-        )
-        and redis is not None
-    ):
+    _calendar_tool_names = {
+        "check_availability", "book_appointment", "get_appointment",
+        "cancel_appointment", "reschedule_appointment", "get_current_date_hour",
+    }
+    if _calendar_tool_names.intersection(config.tools_enabled) and redis is not None:
         from app.agent.calendar_tools import build_calendar_tools
-        from app.integrations.calendar_mock import CalendarMock
 
-        _calendar = CalendarMock(redis=redis, client_id=client_id or str(config.id))
-        calendar_tool_list = build_calendar_tools(_calendar)
-        # Index by name so the tools_enabled filter below works uniformly
-        for ct in calendar_tool_list:
+        if config.calendar_id:
+            # Real Google Calendar integration
+            from app.integrations.calendar import GoogleCalendarClient
+            _calendar = GoogleCalendarClient(
+                calendar_id=config.calendar_id,
+                redis=redis,
+                client_id=client_id or str(config.id),
+            )
+        else:
+            # Demo / local fallback
+            from app.integrations.calendar_mock import CalendarMock
+            _calendar = CalendarMock(redis=redis, client_id=client_id or str(config.id))
+
+        for ct in build_calendar_tools(_calendar):
             all_tools[ct["definition"]["name"]] = ct
 
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]

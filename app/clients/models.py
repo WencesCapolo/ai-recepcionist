@@ -12,5 +12,8 @@ class ClientConfig(BaseModel):
     sheet_id: Optional[str]
     prompt_version: int
     active: bool
-    mp_access_token: Optional[str] = None 
+    mp_access_token: Optional[str] = None
     mp_sandbox: bool = True
+    # Google Calendar — set to the calendar ID (e.g. "foo@gmail.com")
+    # in the Supabase clients table to enable real Calendar integration.
+    calendar_id: Optional[str] = None

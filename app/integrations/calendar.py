@@ -77,11 +77,13 @@ def _next_candidates(n: int) -> list[datetime]:
 
 
 def _busy_periods(service, calendar_id: str, slots: list[datetime]) -> list[tuple[datetime, datetime]]:
+    logger.info("freebusy query calendar_id=%r", calendar_id)
     time_min = slots[0].isoformat()
     time_max = (slots[-1] + timedelta(minutes=SLOT_MINUTES)).isoformat()
     body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": calendar_id}]}
     fb   = service.freebusy().query(body=body).execute()
     busy = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+    logger.info("freebusy result: %r", fb)
     return [
         (
             datetime.fromisoformat(b["start"].replace("Z", "+00:00")),

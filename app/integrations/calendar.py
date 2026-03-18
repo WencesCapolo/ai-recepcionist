@@ -8,6 +8,7 @@ Redis is used for slot locking to prevent double-booking.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -36,10 +37,15 @@ ART            = timezone(timedelta(hours=-3))
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _load_service_account_info() -> dict:
+    raw = base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]).decode("utf-8")
+    return json.loads(raw)
+
+
 def _get_service():
-    raw   = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    info  = json.loads(raw)
-    creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+    creds = Credentials.from_service_account_info(
+        _load_service_account_info(), scopes=_SCOPES
+    )
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -77,13 +83,11 @@ def _next_candidates(n: int) -> list[datetime]:
 
 
 def _busy_periods(service, calendar_id: str, slots: list[datetime]) -> list[tuple[datetime, datetime]]:
-    logger.info("freebusy query calendar_id=%r", calendar_id)
     time_min = slots[0].isoformat()
     time_max = (slots[-1] + timedelta(minutes=SLOT_MINUTES)).isoformat()
     body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": calendar_id}]}
     fb   = service.freebusy().query(body=body).execute()
     busy = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
-    logger.info("freebusy result: %r", fb)
     return [
         (
             datetime.fromisoformat(b["start"].replace("Z", "+00:00")),

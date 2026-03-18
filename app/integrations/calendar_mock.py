@@ -1,209 +1,249 @@
 """
-calendar_mock.py — deterministic fake availability for the dentist demo.
+app/integrations/calendar_mock.py
 
-Slots: Mon–Fri, 09:00–13:00 and 15:00–18:00, every 30 min.
-Pre-seeded taken slots are keyed by weekday (0=Mon … 4=Fri) so the
-demo always looks the same on any given day of the week.
-Real bookings made during the demo are written to Redis and block
-those slots for 7 days (604 800 s).
+CalendarMock — demo backend that stores appointments in Redis.
+Exposes the exact same interface as GoogleCalendarClient so
+calendar_tools.py works with either backend transparently.
+
+Used when config.calendar_id is None/empty (demo clients).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timedelta
-from typing import Any
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── constants ────────────────────────────────────────────────────────────────
+SLOT_MINUTES = 30
+WORK_START   = 10
+WORK_END     = 18
+WORK_DAYS    = {0, 1, 2, 3, 4}
+ART          = timezone(timedelta(hours=-3))
 
-SLOT_DURATION_MIN = 30
-MORNING_START = (9, 0)
-MORNING_END = (13, 0)
-AFTERNOON_START = (15, 0)
-AFTERNOON_END = (18, 0)
-BOOKING_TTL = 7 * 24 * 3600  # 7 days
-
-# Pre-seeded "already taken" slots per weekday (0=Mon … 4=Fri).
-# Times are "HH:MM" strings — must be on the 30-min grid.
-_PRESEED: dict[int, list[str]] = {
-    0: ["09:00", "10:00", "15:30"],          # Monday
-    1: ["09:30", "11:00", "16:00", "16:30"], # Tuesday
-    2: ["10:00", "10:30", "15:00"],          # Wednesday
-    3: ["09:00", "12:00", "17:00"],          # Thursday
-    4: ["09:30", "11:30", "15:30", "17:00"], # Friday
-}
+# Pre-blocked slots for demo realism (relative offsets in hours from now)
+_DEMO_BUSY_OFFSETS = [3, 5, 27, 28]
 
 
-def _all_slots() -> list[str]:
-    """Return all slots in a day as 'HH:MM' strings."""
-    slots: list[str] = []
-    for (sh, sm), (eh, em) in [
-        (MORNING_START, MORNING_END),
-        (AFTERNOON_START, AFTERNOON_END),
-    ]:
-        current = datetime(2000, 1, 1, sh, sm)
-        end = datetime(2000, 1, 1, eh, em)
-        while current < end:
-            slots.append(current.strftime("%H:%M"))
-            current += timedelta(minutes=SLOT_DURATION_MIN)
+def _fmt(dt: datetime) -> str:
+    art    = dt.astimezone(ART)
+    days   = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    months = [
+        "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    ]
+    return f"{days[art.weekday()]} {art.day} de {months[art.month]} a las {art.strftime('%H:%M')}"
+
+
+def _next_candidates(n: int) -> list[datetime]:
+    now       = datetime.now(tz=ART)
+    start     = now + timedelta(hours=2)
+    remainder = start.minute % SLOT_MINUTES
+    if remainder:
+        start += timedelta(minutes=(SLOT_MINUTES - remainder))
+    start = start.replace(second=0, microsecond=0)
+
+    slots, cursor = [], start
+    while len(slots) < n * 3:
+        if cursor.weekday() in WORK_DAYS and WORK_START <= cursor.hour < WORK_END:
+            slots.append(cursor)
+        cursor += timedelta(minutes=SLOT_MINUTES)
+        if cursor.hour >= WORK_END:
+            cursor = (cursor + timedelta(days=1)).replace(
+                hour=WORK_START, minute=0, second=0
+            )
+        while cursor.weekday() not in WORK_DAYS:
+            cursor += timedelta(days=1)
     return slots
 
 
-ALL_SLOTS: list[str] = _all_slots()
-
-
 class CalendarMock:
-    """
-    Fake calendar backed by Redis.
+    def __init__(self, redis, client_id: str):
+        self.redis     = redis
+        self.client_id = client_id
 
-    Redis key format: ``calendar:{client_id}:{date_iso}:{time}``
-    Value: JSON-encoded booking dict (name, phone, reason).
-    """
+    # ── Internal keys ─────────────────────────────────────────────────────────
 
-    def __init__(self, redis: Any, client_id: str) -> None:
-        self._redis = redis
-        self._client_id = client_id
+    def _appt_key(self, event_id: str) -> str:
+        return f"mock_appt:{self.client_id}:{event_id}"
 
-    # ── internal helpers ─────────────────────────────────────────────────────
+    def _lock_key(self, slot_iso: str) -> str:
+        return f"slot_lock:{self.client_id}:{slot_iso}"
 
-    def _redis_key(self, date_iso: str, time: str) -> str:
-        return f"calendar:{self._client_id}:{date_iso}:{time}"
+    def _index_key(self) -> str:
+        return f"mock_appt_index:{self.client_id}"
 
-    def _is_preseed_taken(self, d: date, time: str) -> bool:
-        weekday = d.weekday()  # 0=Mon … 6=Sun
-        return time in _PRESEED.get(weekday, [])
+    def _acquire_lock(self, slot_iso: str, owner: str) -> bool:
+        return bool(self.redis.set(self._lock_key(slot_iso), owner, nx=True, ex=300))
 
-    def _is_redis_taken(self, date_iso: str, time: str) -> bool:
-        key = self._redis_key(date_iso, time)
-        try:
-            return self._redis.exists(key) == 1
-        except Exception:
-            logger.warning("Redis error checking slot %s %s", date_iso, time)
-            return False
+    def _slot_locked(self, slot_iso: str) -> bool:
+        return bool(self.redis.exists(self._lock_key(slot_iso)))
 
-    def _is_taken(self, d: date, time: str) -> bool:
-        return self._is_preseed_taken(d, time) or self._is_redis_taken(
-            d.isoformat(), time
+    def _demo_busy(self) -> set[str]:
+        """Slots pre-blocked for demo realism."""
+        now = datetime.now(tz=ART)
+        busy = set()
+        for offset in _DEMO_BUSY_OFFSETS:
+            candidate = now + timedelta(hours=offset)
+            remainder = candidate.minute % SLOT_MINUTES
+            if remainder:
+                candidate += timedelta(minutes=(SLOT_MINUTES - remainder))
+            candidate = candidate.replace(second=0, microsecond=0)
+            busy.add(candidate.isoformat())
+        return busy
+
+    # ── Public interface ───────────────────────────────────────────────────────
+
+    def get_current_date_hour(self) -> str:
+        now    = datetime.now(tz=ART)
+        days   = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        months = [
+            "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        ]
+        return (
+            f"Hoy es {days[now.weekday()]} {now.day} de {months[now.month]} de {now.year}. "
+            f"Son las {now.strftime('%H:%M')} (hora Argentina)."
         )
 
-    # ── public API ───────────────────────────────────────────────────────────
+    def check_availability(self, count: int = 3) -> str:
+        candidates = _next_candidates(count)
+        demo_busy  = self._demo_busy()
 
-    def available_slots(self, d: date) -> dict[str, list[str]]:
-        """
-        Return free slots grouped by period.
+        # Also exclude slots already booked in Redis mock store
+        raw_index = self.redis.get(self._index_key())
+        booked_slots: set[str] = set()
+        if raw_index:
+            index = json.loads(raw_index)
+            for event_id in index:
+                raw = self.redis.get(self._appt_key(event_id))
+                if raw:
+                    appt = json.loads(raw)
+                    booked_slots.add(appt.get("slot_iso", ""))
 
-        Returns ``{"morning": [...], "afternoon": [...]}`` with only free slots.
-        Weekend → empty lists.
-        """
-        if d.weekday() >= 5:  # Sat / Sun
-            return {"morning": [], "afternoon": []}
+        available = [
+            s for s in candidates
+            if s.isoformat() not in demo_busy
+            and s.isoformat() not in booked_slots
+            and not self._slot_locked(s.isoformat())
+        ][:count]
 
-        morning_boundary = datetime(2000, 1, 1, *AFTERNOON_START)
+        if not available:
+            return "No hay turnos disponibles en los próximos días."
 
-        morning: list[str] = []
-        afternoon: list[str] = []
+        lines = [f"{_fmt(s)}  [slot_iso: {s.isoformat()}]" for s in available]
+        return "Turnos disponibles:\n" + "\n".join(lines)
 
-        for slot in ALL_SLOTS:
-            if self._is_taken(d, slot):
-                continue
-            slot_dt = datetime.strptime(slot, "%H:%M")
-            if slot_dt < morning_boundary:
-                morning.append(slot)
-            else:
-                afternoon.append(slot)
-
-        return {"morning": morning, "afternoon": afternoon}
-
-    def book(
+    def book_appointment(
         self,
-        d: date,
-        time: str,
-        name: str,
-        phone: str,
+        patient_name: str,
+        patient_phone: str,
+        patient_email: str,
         reason: str,
-    ) -> bool:
-        """
-        Attempt to book *time* on *d*.
+        slot_iso: str,
+        is_new_patient: bool = True,
+    ) -> str:
+        owner = f"{patient_phone}:{slot_iso}"
+        if not self._acquire_lock(slot_iso, owner):
+            return "Ese horario acaba de ser tomado. Elegí otro de los disponibles."
 
-        Returns True on success, False if the slot is already taken.
-        Raises CalendarSlotError on bad inputs.
-        """
-        if d.weekday() >= 5:
-            raise CalendarSlotError("No hay turnos disponibles los fines de semana.")
-        if time not in ALL_SLOTS:
-            raise CalendarSlotError(
-                f"El horario '{time}' no es válido. Los turnos son cada 30 minutos."
-            )
-        if self._is_taken(d, time):
-            return False  # caller decides the message
+        event_id = str(uuid.uuid4())[:8]
+        slot_dt  = datetime.fromisoformat(slot_iso)
 
-        payload = json.dumps(
-            {
-                "name": name,
-                "phone": phone,
-                "reason": reason,
-                "booked_at": datetime.utcnow().isoformat(),
-            }
-        )
-        key = self._redis_key(d.isoformat(), time)
-        try:
-            # SET NX — only write if key doesn't exist (race condition guard)
-            result = self._redis.set(key, payload, ex=BOOKING_TTL, nx=True)
-            if result is None:
-                # Another concurrent request beat us to it
-                return False
-        except Exception as exc:
-            logger.error("Redis error booking slot %s %s: %s", d.isoformat(), time, exc)
-            raise CalendarSlotError(
-                "No se pudo confirmar el turno por un error interno. Intentá de nuevo."
-            ) from exc
+        appt = {
+            "event_id":      event_id,
+            "patient_name":  patient_name,
+            "patient_phone": patient_phone,
+            "patient_email": patient_email,
+            "reason":        reason,
+            "slot_iso":      slot_iso,
+            "is_new_patient": is_new_patient,
+        }
+        self.redis.set(self._appt_key(event_id), json.dumps(appt), ex=60 * 60 * 24 * 30)
+
+        # Update index
+        raw_index = self.redis.get(self._index_key())
+        index     = json.loads(raw_index) if raw_index else []
+        index.append(event_id)
+        self.redis.set(self._index_key(), json.dumps(index), ex=60 * 60 * 24 * 30)
 
         logger.info(
-            "Slot booked [client=%s date=%s time=%s name=%s]",
-            self._client_id,
-            d.isoformat(),
-            time,
-            name,
+            "Mock appointment booked: %s | %s | %s | %s",
+            event_id, patient_name, slot_iso, reason,
         )
-        return True
 
-    def cancel(self, d: date, time: str) -> bool:
-        """
-        Cancel a previously booked slot.
+        return (
+            f"Turno confirmado: {patient_name}, {_fmt(slot_dt)}, motivo: {reason}. "
+            f"Se enviará confirmación a {patient_email}. "
+            f"ID: {event_id}"
+        )
 
-        Returns True if the booking was found and deleted.
-        Returns False if there was no Redis booking for that slot
-        (pre-seeded slots or already cancelled).
-        Raises CalendarSlotError on infrastructure errors.
-        """
-        if time not in ALL_SLOTS:
-            raise CalendarSlotError(
-                f"El horario '{time}' no es válido. Los turnos son cada 30 minutos."
-            )
-        key = self._redis_key(d.isoformat(), time)
-        try:
-            deleted = self._redis.delete(key)
-            found = deleted == 1
-        except Exception as exc:
-            logger.error(
-                "Redis error cancelling slot %s %s: %s", d.isoformat(), time, exc
-            )
-            raise CalendarSlotError(
-                "No se pudo cancelar el turno por un error interno. Intentá de nuevo."
-            ) from exc
+    def get_appointment(self, patient_name: str, date_hint: Optional[str] = None) -> str:
+        raw_index = self.redis.get(self._index_key())
+        if not raw_index:
+            return f"No encontré turnos para {patient_name}."
 
-        if found:
-            logger.info(
-                "Slot cancelled [client=%s date=%s time=%s]",
-                self._client_id,
-                d.isoformat(),
-                time,
-            )
-        return found
+        index  = json.loads(raw_index)
+        found  = []
+        now    = datetime.now(tz=ART)
+        q      = patient_name.lower()
 
+        for event_id in index:
+            raw = self.redis.get(self._appt_key(event_id))
+            if not raw:
+                continue
+            appt     = json.loads(raw)
+            slot_dt  = datetime.fromisoformat(appt["slot_iso"])
+            if slot_dt < now:
+                continue  # skip past appointments
+            if q.split()[0] in appt["patient_name"].lower():
+                found.append((slot_dt, appt, event_id))
 
-class CalendarSlotError(Exception):
-    """Raised for invalid slot inputs or infrastructure errors."""
+        if not found:
+            return f"No encontré turnos próximos para {patient_name}."
+
+        found.sort(key=lambda x: x[0])
+        lines = [
+            f"- {_fmt(dt)}: {appt['patient_name']} — {appt['reason']}  [ID: {eid}]"
+            for dt, appt, eid in found
+        ]
+        return f"Turnos encontrados para {patient_name}:\n" + "\n".join(lines)
+
+    def cancel_appointment(self, event_id: str, patient_name: str) -> str:
+        raw = self.redis.get(self._appt_key(event_id))
+        if not raw:
+            return "No encontré ese turno. Verificá el ID."
+
+        appt = json.loads(raw)
+        if patient_name.lower().split()[0] not in appt["patient_name"].lower():
+            return f"El turno no corresponde a {patient_name}. Verificá."
+
+        slot_dt = datetime.fromisoformat(appt["slot_iso"])
+        self.redis.delete(self._appt_key(event_id))
+
+        # Remove from index
+        raw_index = self.redis.get(self._index_key())
+        if raw_index:
+            index = [e for e in json.loads(raw_index) if e != event_id]
+            self.redis.set(self._index_key(), json.dumps(index), ex=60 * 60 * 24 * 30)
+
+        return f"Turno cancelado: {_fmt(slot_dt)} para {patient_name}."
+
+    def reschedule_appointment(self, event_id: str, new_slot_iso: str) -> str:
+        raw = self.redis.get(self._appt_key(event_id))
+        if not raw:
+            return "No encontré ese turno. Verificá el ID."
+
+        if self._slot_locked(new_slot_iso):
+            return "Ese horario ya fue tomado. Elegí otro de los disponibles."
+
+        appt           = json.loads(raw)
+        old_slot       = appt["slot_iso"]
+        appt["slot_iso"] = new_slot_iso
+        self.redis.set(self._appt_key(event_id), json.dumps(appt), ex=60 * 60 * 24 * 30)
+
+        new_dt = datetime.fromisoformat(new_slot_iso)
+        return f"Turno reprogramado al {_fmt(new_dt)}. ID: {event_id}"

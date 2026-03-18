@@ -1,287 +1,204 @@
 """
-app/integrations/google_calendar.py
+app/integrations/calendar.py
 
-Real Google Calendar client for the AI receptionist.
-
-Exposes:
-  GoogleCalendarClient.available_slots(d)  -> {"morning": [...], "afternoon": [...]}
-  GoogleCalendarClient.book(...)           -> event_id str | raises CalendarSlotError
-  GoogleCalendarClient.cancel(event_id)    -> bool
-  GoogleCalendarClient.find_by_name(name)  -> list[dict]   (upcoming events)
-
-Slot locking (race-condition guard) is handled via Upstash Redis SET NX,
-using the same upstash_redis.Redis client the rest of the app uses (sync).
-
-Env vars consumed (validated at startup by config.py):
-  GOOGLE_SERVICE_ACCOUNT_JSON — full JSON string of the service account key
-  (calendar_id is per-client, stored in Supabase ClientConfig)
+GoogleCalendarClient — real Google Calendar backend.
+All methods are synchronous and return plain strings (tool handler output).
+Redis is used for slot locking to prevent double-booking.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from app.config import settings
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (can be overridden via env or ClientConfig in the future)
 # ---------------------------------------------------------------------------
 
-_SCOPES = ["https://www.googleapis.com/auth/calendar"]
-
-# Argentine Standard Time — fixed offset, no DST
-_ART = timezone(timedelta(hours=-3))
-
-SLOT_DURATION_MIN = 30
-
-MORNING_START = (9, 0)
-MORNING_END   = (13, 0)
-AFTERNOON_START = (15, 0)
-AFTERNOON_END   = (18, 0)
-
-WORK_DAYS = {0, 1, 2, 3, 4}  # Mon–Fri
-
-# Slot lock TTL: 5 minutes — long enough for the user to confirm, short enough
-# to not block the slot indefinitely if the conversation is abandoned.
-SLOT_LOCK_TTL = 300
-
-# How far ahead to look when listing upcoming appointments
-APPOINTMENT_LOOKAHEAD_DAYS = 60
-
-
-# ---------------------------------------------------------------------------
-# Lazy singleton for the Google API service object
-# (one per process — credentials are immutable, the object is thread-safe)
-# ---------------------------------------------------------------------------
-
-_service: Any = None
-
-
-def _get_service() -> Any:
-    global _service
-    if _service is None:
-        from google.oauth2.service_account import Credentials
-        from googleapiclient.discovery import build
-
-        raw = settings.google_service_account_json
-        if not raw:
-            raise RuntimeError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON is not configured. "
-                "Add it to your environment variables."
-            )
-        info = json.loads(raw)
-        creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
-        _service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        logger.info("Google Calendar service initialised")
-    return _service
+_SCOPES        = ["https://www.googleapis.com/auth/calendar"]
+SLOT_MINUTES   = 30
+WORK_START     = 10   # 10:00 ART
+WORK_END       = 18   # 18:00 ART
+WORK_DAYS      = {0, 1, 2, 3, 4}  # Mon–Fri
+LOCK_TTL       = 300  # seconds — slot reservation window
+ART            = timezone(timedelta(hours=-3))
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _all_slots_for_day() -> list[str]:
-    """Return all HH:MM slot strings in working hours."""
-    slots: list[str] = []
-    for (sh, sm), (eh, em) in [
-        (MORNING_START, MORNING_END),
-        (AFTERNOON_START, AFTERNOON_END),
-    ]:
-        current = datetime(2000, 1, 1, sh, sm)
-        end = datetime(2000, 1, 1, eh, em)
-        while current < end:
-            slots.append(current.strftime("%H:%M"))
-            current += timedelta(minutes=SLOT_DURATION_MIN)
+def _get_service():
+    raw   = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info  = json.loads(raw)
+    creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+
+def _fmt(dt: datetime) -> str:
+    """'martes 18 de marzo a las 10:00'"""
+    art  = dt.astimezone(ART)
+    days = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    months = [
+        "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    ]
+    return f"{days[art.weekday()]} {art.day} de {months[art.month]} a las {art.strftime('%H:%M')}"
+
+
+def _next_candidates(n: int) -> list[datetime]:
+    """Return next n*3 candidate slot datetimes in ART, starting ≥2h from now."""
+    now       = datetime.now(tz=ART)
+    start     = now + timedelta(hours=2)
+    remainder = start.minute % SLOT_MINUTES
+    if remainder:
+        start += timedelta(minutes=(SLOT_MINUTES - remainder))
+    start = start.replace(second=0, microsecond=0)
+
+    slots  = []
+    cursor = start
+    while len(slots) < n * 3:
+        if cursor.weekday() in WORK_DAYS and WORK_START <= cursor.hour < WORK_END:
+            slots.append(cursor)
+        cursor += timedelta(minutes=SLOT_MINUTES)
+        if cursor.hour >= WORK_END:
+            cursor = (cursor + timedelta(days=1)).replace(hour=WORK_START, minute=0, second=0)
+        while cursor.weekday() not in WORK_DAYS:
+            cursor += timedelta(days=1)
     return slots
 
 
-_ALL_SLOTS: list[str] = _all_slots_for_day()
-
-_MONTHS_ES = [
-    "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-]
-_DAYS_ES = [
-    "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo",
-]
-
-
-def _friendly_date(d: date) -> str:
-    return f"{_DAYS_ES[d.weekday()]} {d.day} de {_MONTHS_ES[d.month]} de {d.year}"
-
-
-def _slot_datetime(d: date, time_str: str) -> datetime:
-    """Combine a date and 'HH:MM' into an ART-aware datetime."""
-    h, m = map(int, time_str.split(":"))
-    return datetime(d.year, d.month, d.day, h, m, tzinfo=_ART)
+def _busy_periods(service, calendar_id: str, slots: list[datetime]) -> list[tuple[datetime, datetime]]:
+    time_min = slots[0].isoformat()
+    time_max = (slots[-1] + timedelta(minutes=SLOT_MINUTES)).isoformat()
+    body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": calendar_id}]}
+    fb   = service.freebusy().query(body=body).execute()
+    busy = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+    return [
+        (
+            datetime.fromisoformat(b["start"].replace("Z", "+00:00")),
+            datetime.fromisoformat(b["end"].replace("Z", "+00:00")),
+        )
+        for b in busy
+    ]
 
 
-def _busy_intervals(freebusy_response: dict, calendar_id: str) -> list[tuple[datetime, datetime]]:
-    busy = freebusy_response.get("calendars", {}).get(calendar_id, {}).get("busy", [])
-    result = []
-    for b in busy:
-        start = datetime.fromisoformat(b["start"].replace("Z", "+00:00"))
-        end   = datetime.fromisoformat(b["end"].replace("Z", "+00:00"))
-        result.append((start, end))
-    return result
-
-
-def _slot_overlaps(slot_start: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
-    slot_end = slot_start + timedelta(minutes=SLOT_DURATION_MIN)
-    for b_start, b_end in busy:
-        if slot_start < b_end and slot_end > b_start:
-            return True
-    return False
+def _is_busy(slot: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
+    slot_end = slot + timedelta(minutes=SLOT_MINUTES)
+    return any(slot < b_end and slot_end > b_start for b_start, b_end in busy)
 
 
 # ---------------------------------------------------------------------------
-# GoogleCalendarClient
+# Client
 # ---------------------------------------------------------------------------
 
 class GoogleCalendarClient:
-    """
-    Google Calendar-backed appointment client.
+    def __init__(self, calendar_id: str, redis, client_id: str):
+        self.calendar_id = calendar_id
+        self.redis       = redis
+        self.client_id   = client_id
+        self._service    = None
 
-    Args:
-        calendar_id: The Google Calendar ID (e.g. "foo@gmail.com" or the
-                     opaque calendar ID from the Calendar settings page).
-        redis:       upstash_redis.Redis instance (sync, already validated).
-        client_id:   Tenant identifier — used to namespace Redis lock keys.
-    """
+    @property
+    def service(self):
+        if self._service is None:
+            self._service = _get_service()
+        return self._service
 
-    def __init__(self, calendar_id: str, redis: Any, client_id: str) -> None:
-        self._cal_id = calendar_id
-        self._redis  = redis
-        self._client_id = client_id
+    # ── Slot locking ──────────────────────────────────────────────────────────
 
-    # ── Redis slot locking ──────────────────────────────────────────────────
+    def _lock_key(self, slot_iso: str) -> str:
+        return f"slot_lock:{self.client_id}:{slot_iso}"
 
-    def _lock_key(self, date_iso: str, time_str: str) -> str:
-        return f"gcal_lock:{self._client_id}:{date_iso}:{time_str}"
+    def _acquire_lock(self, slot_iso: str, owner: str) -> bool:
+        key    = self._lock_key(slot_iso)
+        result = self.redis.set(key, owner, nx=True, ex=LOCK_TTL)
+        return bool(result)
 
-    def _try_lock_slot(self, date_iso: str, time_str: str, conversation_id: str) -> bool:
-        """SET NX — returns True if lock acquired, False if already held."""
-        key = self._lock_key(date_iso, time_str)
-        result = self._redis.set(key, conversation_id, nx=True, ex=SLOT_LOCK_TTL)
-        return result is not None  # upstash returns the string "OK" or None
+    def _release_lock(self, slot_iso: str):
+        self.redis.delete(self._lock_key(slot_iso))
 
-    def _release_slot(self, date_iso: str, time_str: str) -> None:
-        self._redis.delete(self._lock_key(date_iso, time_str))
+    def _slot_locked(self, slot_iso: str) -> bool:
+        return bool(self.redis.exists(self._lock_key(slot_iso)))
 
-    def _slot_is_locked(self, date_iso: str, time_str: str) -> bool:
-        return self._redis.exists(self._lock_key(date_iso, time_str)) == 1
+    # ── Public interface (called by calendar_tools.py handlers) ──────────────
 
-    # ── Google Calendar queries ─────────────────────────────────────────────
+    def get_current_date_hour(self) -> str:
+        now  = datetime.now(tz=ART)
+        days = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        months = [
+            "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        ]
+        return (
+            f"Hoy es {days[now.weekday()]} {now.day} de {months[now.month]} de {now.year}. "
+            f"Son las {now.strftime('%H:%M')} (hora Argentina)."
+        )
 
-    def _freebusy(self, time_min: datetime, time_max: datetime) -> list[tuple[datetime, datetime]]:
-        svc = _get_service()
-        body = {
-            "timeMin": time_min.isoformat(),
-            "timeMax": time_max.isoformat(),
-            "items":   [{"id": self._cal_id}],
-        }
-        resp = svc.freebusy().query(body=body).execute()
-        return _busy_intervals(resp, self._cal_id)
-
-    def _is_gcal_busy(self, slot_dt: datetime) -> bool:
-        slot_end = slot_dt + timedelta(minutes=SLOT_DURATION_MIN)
-        busy = self._freebusy(slot_dt, slot_end)
-        return bool(busy)
-
-    # ── Public API (mirrors CalendarMock interface) ─────────────────────────
-
-    def available_slots(self, d: date) -> dict[str, list[str]]:
-        """
-        Return free slots for *d* grouped into morning/afternoon.
-        Checks Google Calendar freebusy + Redis locks.
-        Weekend → empty lists.
-        """
-        if d.weekday() >= 5:
-            return {"morning": [], "afternoon": []}
-
-        date_iso = d.isoformat()
-
-        # Build datetimes for all candidate slots
-        slot_datetimes = {t: _slot_datetime(d, t) for t in _ALL_SLOTS}
-
-        # Single freebusy call covering the whole day
-        day_start = _slot_datetime(d, _ALL_SLOTS[0])
-        day_end   = _slot_datetime(d, _ALL_SLOTS[-1]) + timedelta(minutes=SLOT_DURATION_MIN)
+    def check_availability(self, count: int = 3) -> str:
         try:
-            busy = self._freebusy(day_start, day_end)
-        except Exception:
-            logger.exception("freebusy query failed for %s", date_iso)
-            busy = []
+            candidates = _next_candidates(count)
+            busy       = _busy_periods(self.service, self.calendar_id, candidates)
+            available  = [
+                s for s in candidates
+                if not _is_busy(s, busy) and not self._slot_locked(s.isoformat())
+            ][:count]
+        except Exception as e:
+            logger.error("check_availability error: %s", e)
+            return "No pude verificar la disponibilidad en este momento. Intentá más tarde."
 
-        morning_cutoff = datetime(2000, 1, 1, *AFTERNOON_START)
-        morning: list[str] = []
-        afternoon: list[str] = []
+        if not available:
+            return "No hay turnos disponibles en los próximos días."
 
-        for time_str, slot_dt in slot_datetimes.items():
-            if _slot_overlaps(slot_dt, busy):
-                continue
-            if self._slot_is_locked(date_iso, time_str):
-                continue
-            ref = datetime.strptime(time_str, "%H:%M")
-            if ref < morning_cutoff:
-                morning.append(time_str)
-            else:
-                afternoon.append(time_str)
+        lines = [f"{_fmt(s)}  [slot_iso: {s.isoformat()}]" for s in available]
+        return "Turnos disponibles:\n" + "\n".join(lines)
 
-        return {"morning": morning, "afternoon": afternoon}
-
-    def book(
+    def book_appointment(
         self,
-        d: date,
-        time: str,
-        name: str,
-        phone: str,
+        patient_name: str,
+        patient_phone: str,
+        patient_email: str,
         reason: str,
-        conversation_id: str = "",
+        slot_iso: str,
         is_new_patient: bool = True,
     ) -> str:
-        """
-        Book the slot. Returns the Google Calendar event_id on success.
-        Raises CalendarSlotError on invalid input or if the slot is taken.
-        """
-        if d.weekday() >= 5:
-            raise CalendarSlotError("No hay turnos disponibles los fines de semana.")
-        if time not in _ALL_SLOTS:
-            raise CalendarSlotError(
-                f"El horario '{time}' no es válido. Los turnos son cada 30 minutos."
-            )
+        owner = f"{patient_phone}:{slot_iso}"
 
-        date_iso = d.isoformat()
-
-        # 1. Acquire Redis lock (fast path — prevents double-booking between
-        #    concurrent conversations without hitting the Calendar API twice)
-        if not self._try_lock_slot(date_iso, time, conversation_id or name):
-            raise CalendarSlotError(
-                "Ese horario acaba de ser reservado por otro paciente. "
+        # 1. Acquire slot lock
+        if not self._acquire_lock(slot_iso, owner):
+            return (
+                "Ese horario acaba de ser tomado por otro paciente. "
                 "Elegí otro de los disponibles."
             )
 
         try:
-            # 2. Double-check against Google Calendar (race-condition guard)
-            slot_dt = _slot_datetime(d, time)
-            if self._is_gcal_busy(slot_dt):
-                raise CalendarSlotError(
-                    "Ese horario ya no está disponible. Elegí otro de los disponibles."
+            slot_dt  = datetime.fromisoformat(slot_iso)
+            slot_end = slot_dt + timedelta(minutes=SLOT_MINUTES)
+
+            # 2. Double-check against Calendar
+            busy = _busy_periods(self.service, self.calendar_id, [slot_dt])
+            if _is_busy(slot_dt, busy):
+                return (
+                    "Ese horario ya no está disponible. "
+                    "Elegí otro de los que te ofrecí."
                 )
 
-            # 3. Create the event
-            slot_end = slot_dt + timedelta(minutes=SLOT_DURATION_MIN)
+            # 3. Create event
             patient_type = "Paciente nuevo" if is_new_patient else "Paciente existente"
-            event_body = {
-                "summary": f"{name} — {reason}",
+            event = {
+                "summary": f"{patient_name} — {reason}",
                 "description": (
-                    f"Paciente: {name}\n"
-                    f"WhatsApp: {phone}\n"
+                    f"Paciente: {patient_name}\n"
+                    f"WhatsApp: {patient_phone}\n"
+                    f"Email: {patient_email}\n"
                     f"Motivo: {reason}\n"
                     f"Tipo: {patient_type}\n"
                     f"Agendado via WhatsApp Bot"
@@ -294,140 +211,124 @@ class GoogleCalendarClient:
                     "dateTime": slot_end.isoformat(),
                     "timeZone": "America/Argentina/Cordoba",
                 },
+                "attendees": [{"email": patient_email}],
                 "reminders": {
                     "useDefault": False,
-                    "overrides": [{"method": "popup", "minutes": 60}],
+                    "overrides": [
+                        {"method": "email", "minutes": 60 * 24},  # 24h before
+                        {"method": "popup", "minutes": 60},
+                    ],
                 },
             }
-            svc = _get_service()
-            created = svc.events().insert(calendarId=self._cal_id, body=event_body).execute()
-            event_id: str = created["id"]
+            created  = self.service.events().insert(
+                calendarId=self.calendar_id,
+                body=event,
+                sendUpdates="all",   # sends confirmation email to attendee
+            ).execute()
+            event_id = created["id"]
 
-            logger.info(
-                "Appointment booked [client=%s date=%s time=%s name=%s event_id=%s]",
-                self._client_id, date_iso, time, name, event_id,
+            # 4. Store in Redis for quick lookup (30 days)
+            lookup_key = f"appt:{self.client_id}:{patient_phone}:{slot_dt.strftime('%Y-%m-%d')}"
+            self.redis.set(lookup_key, event_id, ex=60 * 60 * 24 * 30)
+
+            return (
+                f"Turno confirmado: {patient_name}, {_fmt(slot_dt)}, motivo: {reason}. "
+                f"Se envió confirmación a {patient_email}. "
+                f"ID: {event_id}"
             )
-            return event_id
 
-        except CalendarSlotError:
-            # Release lock so the slot stays available for others
-            self._release_slot(date_iso, time)
-            raise
-        except Exception as exc:
-            self._release_slot(date_iso, time)
-            logger.exception("Error creating calendar event [client=%s]", self._client_id)
-            raise CalendarSlotError(
-                "No se pudo confirmar el turno por un error interno. Intentá de nuevo."
-            ) from exc
+        except Exception as e:
+            logger.error("book_appointment error: %s", e)
+            return "No pude crear el turno. Intentá más tarde o llamá al consultorio."
 
-    def find_by_name(self, patient_name: str) -> list[dict]:
-        """
-        Search upcoming events matching *patient_name*.
-        Returns a list of dicts with keys: event_id, summary, start_dt.
-        """
-        svc = _get_service()
-        now = datetime.now(tz=timezone.utc)
-        time_max = now + timedelta(days=APPOINTMENT_LOOKAHEAD_DAYS)
+        finally:
+            # Lock is kept until TTL expires — prevents re-booking same slot
+            # while the patient is still in the same conversation.
+            # Call _release_lock only on error paths if needed.
+            pass
 
-        result = (
-            svc.events()
-            .list(
-                calendarId=self._cal_id,
-                timeMin=now.isoformat(),
-                timeMax=time_max.isoformat(),
-                q=patient_name,
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=5,
-            )
-            .execute()
-        )
-        items = result.get("items", [])
-        appointments = []
-        for ev in items:
-            raw = ev["start"].get("dateTime", ev["start"].get("date"))
-            start_dt = datetime.fromisoformat(raw)
-            appointments.append({
-                "event_id": ev["id"],
-                "summary":  ev.get("summary", "(sin título)"),
-                "start_dt": start_dt,
-            })
-        return appointments
-
-    def cancel(self, event_id: str, patient_name: str) -> str:
-        """
-        Cancel an event by ID. Verifies patient name matches before deleting.
-        Returns a human-readable confirmation string.
-        Raises CalendarSlotError if the event is not found or name doesn't match.
-        """
-        svc = _get_service()
+    def get_appointment(self, patient_name: str, date_hint: Optional[str] = None) -> str:
         try:
-            event = svc.events().get(calendarId=self._cal_id, eventId=event_id).execute()
-        except Exception:
-            raise CalendarSlotError(
-                "No encontré ese turno. Verificá el ID o buscá el turno de nuevo."
+            now      = datetime.now(tz=ART)
+            time_max = (now + timedelta(days=60)).isoformat()
+
+            results = (
+                self.service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=now.isoformat(),
+                    timeMax=time_max,
+                    q=patient_name,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=5,
+                )
+                .execute()
             )
+            items = results.get("items", [])
+        except Exception as e:
+            logger.error("get_appointment error: %s", e)
+            return "No pude buscar el turno en este momento."
+
+        if not items:
+            return f"No encontré turnos próximos para {patient_name}."
+
+        lines = []
+        for ev in items:
+            start_raw = ev["start"].get("dateTime", ev["start"].get("date"))
+            start_dt  = datetime.fromisoformat(start_raw)
+            lines.append(
+                f"- {_fmt(start_dt)}: {ev.get('summary', '(sin título)')}  [ID: {ev['id']}]"
+            )
+        return f"Turnos encontrados para {patient_name}:\n" + "\n".join(lines)
+
+    def cancel_appointment(self, event_id: str, patient_name: str) -> str:
+        try:
+            event = self.service.events().get(
+                calendarId=self.calendar_id, eventId=event_id
+            ).execute()
+        except Exception:
+            return "No encontré ese turno. Verificá el nombre o buscá el turno de nuevo."
 
         summary = event.get("summary", "")
-        # Check only the first word of the name to handle partial matches
-        first_name = patient_name.strip().lower().split()[0]
+        first_name = patient_name.lower().split()[0]
         if first_name not in summary.lower():
-            raise CalendarSlotError(
-                f"El turno no parece corresponder a {patient_name}. Verificá los datos."
-            )
+            return f"El turno no parece corresponder a {patient_name}. Verificá."
 
-        raw = event["start"].get("dateTime", event["start"].get("date"))
-        start_dt = datetime.fromisoformat(raw).astimezone(_ART)
-        svc.events().delete(calendarId=self._cal_id, eventId=event_id).execute()
-
-        d = start_dt.date()
-        time_str = start_dt.strftime("%H:%M")
-        date_iso = d.isoformat()
-        # Release any lingering lock for the freed slot
-        self._release_slot(date_iso, time_str)
-
-        logger.info(
-            "Appointment cancelled [client=%s event_id=%s name=%s]",
-            self._client_id, event_id, patient_name,
-        )
-        return f"Turno cancelado: {_friendly_date(d)} a las {time_str} para {patient_name}."
-
-    def reschedule(
-        self,
-        event_id: str,
-        new_date: date,
-        new_time: str,
-        conversation_id: str = "",
-    ) -> str:
-        """
-        Move an existing event to a new slot.
-        Returns a confirmation string.
-        Raises CalendarSlotError on conflicts or infrastructure errors.
-        """
-        if new_date.weekday() >= 5:
-            raise CalendarSlotError("No trabajamos los fines de semana.")
-        if new_time not in _ALL_SLOTS:
-            raise CalendarSlotError(
-                f"El horario '{new_time}' no es válido. Los turnos son cada 30 minutos."
-            )
-
-        date_iso = new_date.isoformat()
-
-        if not self._try_lock_slot(date_iso, new_time, conversation_id):
-            raise CalendarSlotError(
-                "Ese horario acaba de ser reservado. Elegí otro de los disponibles."
-            )
+        start_raw = event["start"].get("dateTime", event["start"].get("date"))
+        start_dt  = datetime.fromisoformat(start_raw)
 
         try:
-            new_start = _slot_datetime(new_date, new_time)
-            if self._is_gcal_busy(new_start):
-                raise CalendarSlotError(
-                    "Ese horario ya no está disponible. Elegí otro."
-                )
+            self.service.events().delete(
+                calendarId=self.calendar_id,
+                eventId=event_id,
+                sendUpdates="all",
+            ).execute()
+        except Exception as e:
+            logger.error("cancel_appointment error: %s", e)
+            return "No pude cancelar el turno. Intentá más tarde o llamá al consultorio."
 
-            new_end = new_start + timedelta(minutes=SLOT_DURATION_MIN)
-            svc = _get_service()
-            event = svc.events().get(calendarId=self._cal_id, eventId=event_id).execute()
+        return f"Turno cancelado: {_fmt(start_dt)} para {patient_name}."
+
+    def reschedule_appointment(self, event_id: str, new_slot_iso: str) -> str:
+        new_start = datetime.fromisoformat(new_slot_iso)
+        new_end   = new_start + timedelta(minutes=SLOT_MINUTES)
+
+        # Check availability first
+        try:
+            busy = _busy_periods(self.service, self.calendar_id, [new_start])
+        except Exception as e:
+            logger.error("reschedule freebusy error: %s", e)
+            return "No pude verificar la disponibilidad. Intentá más tarde."
+
+        if _is_busy(new_start, busy):
+            return "Ese horario ya no está disponible. Elegí otro de los disponibles."
+
+        try:
+            event = self.service.events().get(
+                calendarId=self.calendar_id, eventId=event_id
+            ).execute()
+
             event["start"] = {
                 "dateTime": new_start.isoformat(),
                 "timeZone": "America/Argentina/Cordoba",
@@ -436,29 +337,16 @@ class GoogleCalendarClient:
                 "dateTime": new_end.isoformat(),
                 "timeZone": "America/Argentina/Cordoba",
             }
-            svc.events().update(
-                calendarId=self._cal_id, eventId=event_id, body=event
+
+            updated = self.service.events().update(
+                calendarId=self.calendar_id,
+                eventId=event_id,
+                body=event,
+                sendUpdates="all",
             ).execute()
 
-            logger.info(
-                "Appointment rescheduled [client=%s event_id=%s new_date=%s new_time=%s]",
-                self._client_id, event_id, date_iso, new_time,
-            )
-            return (
-                f"Turno reprogramado al {_friendly_date(new_date)} a las {new_time}. "
-                f"ID: {event_id}"
-            )
+        except Exception as e:
+            logger.error("reschedule_appointment error: %s", e)
+            return "No pude reprogramar el turno. Intentá más tarde o llamá al consultorio."
 
-        except CalendarSlotError:
-            self._release_slot(date_iso, new_time)
-            raise
-        except Exception as exc:
-            self._release_slot(date_iso, new_time)
-            logger.exception("Error rescheduling event [client=%s]", self._client_id)
-            raise CalendarSlotError(
-                "No se pudo reprogramar el turno por un error interno. Intentá de nuevo."
-            ) from exc
-
-
-class CalendarSlotError(Exception):
-    """Raised for invalid slot inputs, conflicts, or infrastructure errors."""
+        return f"Turno reprogramado al {_fmt(new_start)}. ID: {updated['id']}"

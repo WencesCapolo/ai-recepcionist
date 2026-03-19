@@ -16,12 +16,18 @@ from __future__ import annotations
 
 import json
 import logging
-from functools import lru_cache
 from typing import Any, Optional
 
 from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
+
+
+def _get_gc():
+    """Returns the cached gspread client from SheetsClient's module."""
+    from app.integrations.sheets import _get_gspread_client
+    return _get_gspread_client()
+
 
 
 
@@ -41,7 +47,7 @@ def get_treatment_info(sheets_client, sheet_id: str, treatment: str) -> str:
     Used by GoogleCalendarClient.get_treatment_info() and the get_prices tool.
     """
     try:
-        spreadsheet = sheets_client.client.open_by_key(sheet_id)
+        spreadsheet = _get_gc().open_by_key(sheet_id)
         ws          = spreadsheet.worksheet(TAB_TREATMENTS)
         records     = ws.get_all_records()
     except Exception as e:
@@ -85,7 +91,7 @@ def get_all_treatments(sheets_client, sheet_id: str) -> str:
     Used by the get_prices tool.
     """
     try:
-        spreadsheet = sheets_client.client.open_by_key(sheet_id)
+        spreadsheet = _get_gc().open_by_key(sheet_id)
         ws          = spreadsheet.worksheet(TAB_TREATMENTS)
         records     = ws.get_all_records()
     except Exception as e:
@@ -114,7 +120,7 @@ def get_insurances(sheets_client, sheet_id: str) -> str:
     Returns a human-readable list of accepted obras sociales.
     """
     try:
-        spreadsheet = sheets_client.client.open_by_key(sheet_id)
+        spreadsheet = _get_gc().open_by_key(sheet_id)
         ws          = spreadsheet.worksheet(TAB_INSURANCES)
         records     = ws.get_all_records()
     except Exception as e:

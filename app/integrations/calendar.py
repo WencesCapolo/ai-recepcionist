@@ -161,14 +161,22 @@ class GoogleCalendarClient:
             f"Son las {now.strftime('%H:%M')} (hora Argentina)."
         )
 
-    def check_availability(self, count: int = 3, duration_minutes: int = SLOT_MINUTES) -> str:
+    def check_availability(
+        self,
+        count: int = 3,
+        duration_minutes: int = SLOT_MINUTES,
+        after_hour: int = 0,
+        before_hour: int = 24,
+    ) -> str:
         try:
             candidates = _next_candidates(count * 10, duration_minutes)
             busy       = _busy_periods(self.service, self.calendar_id, candidates, duration_minutes)
 
             free = [
                 s for s in candidates
-                if not _is_busy(s, busy, duration_minutes) and not self._slot_locked(s.isoformat())
+                if not _is_busy(s, busy, duration_minutes)
+                and not self._slot_locked(s.isoformat())
+                and after_hour <= s.astimezone(ART).hour < before_hour
             ]
 
             # One slot per calendar day (ART), up to `count`
@@ -187,6 +195,8 @@ class GoogleCalendarClient:
             return "No pude verificar la disponibilidad en este momento. Intentá más tarde."
 
         if not available:
+            if after_hour > 0:
+                return f"No tengo turnos disponibles después de las {after_hour}:00 en los próximos días."
             return "No hay turnos disponibles en los próximos días."
 
         lines = [f"{_fmt(s)}  [slot_iso: {s.isoformat()}]" for s in available]

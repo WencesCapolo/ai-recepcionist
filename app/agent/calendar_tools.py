@@ -67,8 +67,13 @@ def _make_get_current_date_hour(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_check_availability(calendar) -> dict:
-    def handler(count: int = 3, duration_minutes: int = 30) -> str:
-        return calendar.check_availability(count=min(count, 5), duration_minutes=duration_minutes)
+    def handler(count: int = 3, duration_minutes: int = 30, after_hour: int = 0, before_hour: int = 24) -> str:
+        return calendar.check_availability(
+            count=min(count, 5),
+            duration_minutes=duration_minutes,
+            after_hour=after_hour,
+            before_hour=before_hour,
+        )
 
     return {
         "definition": {
@@ -77,7 +82,8 @@ def _make_check_availability(calendar) -> dict:
                 "Devuelve los próximos turnos disponibles en el consultorio. "
                 "Llamar SIEMPRE antes de ofrecer horarios al paciente. "
                 "NUNCA ofrecer horarios sin llamar esta herramienta primero. "
-                "Si ya llamaste get_treatment_info, pasá el duration_minutes obtenido."
+                "Si ya llamaste get_treatment_info, pasá el duration_minutes obtenido. "
+                "Usá after_hour=13 si el paciente pide turno de tarde, after_hour=8 before_hour=12 para mañana."
             ),
             "input_schema": {
                 "type": "object",
@@ -91,6 +97,16 @@ def _make_check_availability(calendar) -> dict:
                         "type": "integer",
                         "description": "Duración del turno en minutos (obtenido de get_treatment_info). Default 30.",
                         "default": 30,
+                    },
+                    "after_hour": {
+                        "type": "integer",
+                        "description": "Hora mínima del turno en formato 24h. Usá 13 para turnos de tarde, 0 para cualquier hora.",
+                        "default": 0,
+                    },
+                    "before_hour": {
+                        "type": "integer",
+                        "description": "Hora máxima del turno en formato 24h. Usá 12 para turnos de mañana, 24 para cualquier hora.",
+                        "default": 24,
                     },
                 },
                 "required": [],

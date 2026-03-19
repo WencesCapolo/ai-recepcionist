@@ -179,16 +179,20 @@ class GoogleCalendarClient:
                 and after_hour <= s.astimezone(ART).hour < before_hour
             ]
 
-            # One slot per calendar day (ART), up to `count`
-            seen_days: set = set()
-            available: list = []
-            for s in free:
-                day = s.astimezone(ART).date()
-                if day not in seen_days:
-                    seen_days.add(day)
-                    available.append(s)
-                if len(available) == count:
-                    break
+            # If a time range is specified, show multiple slots (user knows what they want).
+            # Otherwise, show only the first slot per day (cleaner for open-ended requests).
+            if after_hour > 0 or before_hour < 24:
+                available = free[:count]
+            else:
+                seen_days: set = set()
+                available: list = []
+                for s in free:
+                    day = s.astimezone(ART).date()
+                    if day not in seen_days:
+                        seen_days.add(day)
+                        available.append(s)
+                    if len(available) == count:
+                        break
 
         except Exception as e:
             logger.error("check_availability error: %s", e)

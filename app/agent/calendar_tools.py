@@ -28,7 +28,6 @@ def build_calendar_tools(calendar) -> list[dict]:
     """
     return [
         _make_get_current_date_hour(calendar),
-        _make_get_treatment_info(calendar),
         _make_check_availability(calendar),
         _make_book_appointment(calendar),
         _make_get_appointment(calendar),
@@ -290,37 +289,6 @@ def _make_reschedule_appointment(calendar) -> dict:
                     },
                 },
                 "required": ["event_id", "new_slot_iso"],
-            },
-        },
-        "handler": handler,
-    }
-
-
-# ---------------------------------------------------------------------------
-# get_treatment_info
-# ---------------------------------------------------------------------------
-
-def _make_get_treatment_info(calendar) -> dict:
-    def handler(treatment: str) -> str:
-        return calendar.get_treatment_info(treatment)
-
-    return {
-        "definition": {
-            "name": "get_treatment_info",
-            "description": (
-                "Devuelve la duración en minutos y el precio de un tratamiento odontológico. "
-                "Llamar ANTES de check_availability cuando el paciente dice el motivo de consulta, "
-                "para pasar el duration_minutes correcto a check_availability y book_appointment."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "treatment": {
-                        "type": "string",
-                        "description": "Nombre del tratamiento (ej: 'limpieza', 'extracción', 'conducto')",
-                    }
-                },
-                "required": ["treatment"],
             },
         },
         "handler": handler,

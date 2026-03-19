@@ -277,20 +277,6 @@ class GoogleCalendarClient:
             # Call _release_lock only on error paths if needed.
             pass
 
-    def get_treatment_info(self, treatment: str) -> str:
-        """
-        Looks up treatment duration and price from the sheets client.
-        The sheets client is injected via set_sheets() after construction.
-        Falls back to 30 min / price unknown if not configured.
-        """
-        if not hasattr(self, "_sheets") or self._sheets is None:
-            return json.dumps({"duration_minutes": 30, "price": None, "note": "Sin hoja de tratamientos configurada"})
-        return self._sheets.get_treatment_info(treatment)
-
-    def set_sheets(self, sheets_client) -> None:
-        """Inject the sheets client for treatment lookups."""
-        self._sheets = sheets_client
-
     def get_appointment(self, patient_name: str, date_hint: Optional[str] = None) -> str:
         try:
             now      = datetime.now(tz=ART)

@@ -38,7 +38,6 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
         "cancel_appointment", "reschedule_appointment", "get_current_date_hour",
         "get_treatment_info",
     }
-    _calendar = None
     if _calendar_tool_names.intersection(config.tools_enabled) and redis is not None:
         from app.agent.calendar_tools import build_calendar_tools
 
@@ -57,20 +56,11 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
             all_tools[ct["definition"]["name"]] = ct
 
     # ── Dentist info tools ────────────────────────────────────────────────────
-    _dentist_info_names = {"get_prices", "get_insurances"}
+    _dentist_info_names = {"get_prices", "get_insurances", "get_treatment_info"}
     if _dentist_info_names.intersection(config.tools_enabled) and config.prices_sheet_id:
-        all_tools["get_prices"]     = _make_get_prices_dentist(sheets, config.prices_sheet_id)
-        all_tools["get_insurances"] = _make_get_insurances(sheets, config.prices_sheet_id)
-
-    # Wire sheets into calendar so get_treatment_info can look up durations
-    if _calendar is not None and config.prices_sheet_id and hasattr(_calendar, "set_sheets"):
-        class _SheetsProxy:
-            def __init__(self, sh, sid):
-                self._client = sh
-                self._sid    = sid
-            def _open(self, _ignored):
-                return self._client.client.open_by_key(self._sid)
-        _calendar.set_sheets(_SheetsProxy(sheets, config.prices_sheet_id))
+        all_tools["get_treatment_info"] = _make_get_treatment_info(sheets, config.prices_sheet_id)
+        all_tools["get_prices"]         = _make_get_prices_dentist(sheets, config.prices_sheet_id)
+        all_tools["get_insurances"]     = _make_get_insurances(sheets, config.prices_sheet_id)
 
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
 
@@ -326,6 +316,33 @@ def _build_generate_payment_link(
 
 
 # ── Dentist tools ─────────────────────────────────────────────────────────────
+
+def _make_get_treatment_info(sheets: SheetsClient, sheet_id: str) -> dict:
+    def handler(treatment: str) -> str:
+        from app.integrations.dentist_sheets import get_treatment_info
+        return get_treatment_info(sheets, sheet_id, treatment)
+
+    return {
+        "definition": {
+            "name": "get_treatment_info",
+            "description": (
+                "Devuelve la duración en minutos y el precio de un tratamiento odontológico. "
+                "Llamar ANTES de check_availability para pasar el duration_minutes correcto."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "treatment": {
+                        "type": "string",
+                        "description": "Nombre del tratamiento (ej: 'limpieza', 'extracción', 'conducto')",
+                    }
+                },
+                "required": ["treatment"],
+            },
+        },
+        "handler": handler,
+    }
+
 
 def _make_get_prices_dentist(sheets: SheetsClient, sheet_id: str) -> dict:
     def handler(treatment: str = "") -> str:

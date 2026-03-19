@@ -61,7 +61,7 @@ def _fmt(dt: datetime) -> str:
 
 
 def _next_candidates(n: int) -> list[datetime]:
-    """Return next n*3 candidate slot datetimes in ART, starting ≥2h from now."""
+    """Return next n candidate slot datetimes in ART, starting ≥2h from now."""
     now       = datetime.now(tz=ART)
     start     = now + timedelta(hours=2)
     remainder = start.minute % SLOT_MINUTES
@@ -71,14 +71,21 @@ def _next_candidates(n: int) -> list[datetime]:
 
     slots  = []
     cursor = start
-    while len(slots) < n * 3:
-        if cursor.weekday() in WORK_DAYS and WORK_START <= cursor.hour < WORK_END:
-            slots.append(cursor)
+    while len(slots) < n:
+        # Always work in ART to get correct local hour and weekday
+        cursor_art = cursor.astimezone(ART)
+        if cursor_art.weekday() in WORK_DAYS and WORK_START <= cursor_art.hour < WORK_END:
+            slots.append(cursor_art)
         cursor += timedelta(minutes=SLOT_MINUTES)
-        if cursor.hour >= WORK_END:
-            cursor = (cursor + timedelta(days=1)).replace(hour=WORK_START, minute=0, second=0)
-        while cursor.weekday() not in WORK_DAYS:
-            cursor += timedelta(days=1)
+        cursor_art = cursor.astimezone(ART)
+        # Jump to next working day start if past work hours
+        if cursor_art.hour >= WORK_END:
+            next_day = (cursor_art + timedelta(days=1)).replace(
+                hour=WORK_START, minute=0, second=0, microsecond=0
+            )
+            while next_day.weekday() not in WORK_DAYS:
+                next_day += timedelta(days=1)
+            cursor = next_day
     return slots
 
 
@@ -108,7 +115,7 @@ def _is_busy(slot: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
 
 class GoogleCalendarClient:
     def __init__(self, calendar_id: str, redis, client_id: str):
-        self.calendar_id = calendar_id
+        self.calendar_id = calendar_id.strip()  # guard against trailing \r\n from Supabase
         self.redis       = redis
         self.client_id   = client_id
         self._service    = None
@@ -151,12 +158,27 @@ class GoogleCalendarClient:
 
     def check_availability(self, count: int = 3) -> str:
         try:
-            candidates = _next_candidates(count)
+            # Generate enough candidates to find `count` distinct available days
+            candidates = _next_candidates(count * 10)
             busy       = _busy_periods(self.service, self.calendar_id, candidates)
-            available  = [
+
+            # Filter out busy and locked slots
+            free = [
                 s for s in candidates
                 if not _is_busy(s, busy) and not self._slot_locked(s.isoformat())
-            ][:count]
+            ]
+
+            # Pick the first available slot of each calendar day (ART), up to `count`
+            seen_days: set = set()
+            available: list = []
+            for s in free:
+                day = s.astimezone(ART).date()
+                if day not in seen_days:
+                    seen_days.add(day)
+                    available.append(s)
+                if len(available) == count:
+                    break
+
         except Exception as e:
             logger.error("check_availability error: %s", e)
             return "No pude verificar la disponibilidad en este momento. Intentá más tarde."

@@ -9,7 +9,7 @@ class ClientConfig(BaseModel):
     whatsapp_number: str
     system_prompt: str
     tools_enabled: list[str]
-    sheet_id: Optional[str]
+    sheet_id: Optional[str] # Google Sheet ID for products/stock (panadería, ferretería, etc)
     prompt_version: int
     active: bool
     mp_access_token: Optional[str] = None
@@ -17,3 +17,4 @@ class ClientConfig(BaseModel):
     # Google Calendar — set to the calendar ID (e.g. "foo@gmail.com")
     # in the Supabase clients table to enable real Calendar integration.
     calendar_id: Optional[str] = None
+    prices_sheet_id: Optional[str] = None  # Google Sheet ID for dentist treatments/insurances

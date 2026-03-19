@@ -60,7 +60,7 @@ def _fmt(dt: datetime) -> str:
     return f"{days[art.weekday()]} {art.day} de {months[art.month]} a las {art.strftime('%H:%M')}"
 
 
-def _next_candidates(n: int) -> list[datetime]:
+def _next_candidates(n: int, duration_minutes: int = SLOT_MINUTES) -> list[datetime]:
     """Return next n candidate slot datetimes in ART, starting ≥2h from now."""
     now       = datetime.now(tz=ART)
     start     = now + timedelta(hours=2)
@@ -72,13 +72,18 @@ def _next_candidates(n: int) -> list[datetime]:
     slots  = []
     cursor = start
     while len(slots) < n:
-        # Always work in ART to get correct local hour and weekday
         cursor_art = cursor.astimezone(ART)
-        if cursor_art.weekday() in WORK_DAYS and WORK_START <= cursor_art.hour < WORK_END:
+        slot_end_hour = (cursor_art + timedelta(minutes=duration_minutes)).hour
+        fits_in_day = (
+            cursor_art.weekday() in WORK_DAYS
+            and WORK_START <= cursor_art.hour
+            and (cursor_art + timedelta(minutes=duration_minutes)).astimezone(ART).hour <= WORK_END
+            and (cursor_art + timedelta(minutes=duration_minutes)).astimezone(ART).date() == cursor_art.date()
+        )
+        if fits_in_day:
             slots.append(cursor_art)
         cursor += timedelta(minutes=SLOT_MINUTES)
         cursor_art = cursor.astimezone(ART)
-        # Jump to next working day start if past work hours
         if cursor_art.hour >= WORK_END:
             next_day = (cursor_art + timedelta(days=1)).replace(
                 hour=WORK_START, minute=0, second=0, microsecond=0
@@ -89,9 +94,9 @@ def _next_candidates(n: int) -> list[datetime]:
     return slots
 
 
-def _busy_periods(service, calendar_id: str, slots: list[datetime]) -> list[tuple[datetime, datetime]]:
+def _busy_periods(service, calendar_id: str, slots: list[datetime], duration_minutes: int = SLOT_MINUTES) -> list[tuple[datetime, datetime]]:
     time_min = slots[0].isoformat()
-    time_max = (slots[-1] + timedelta(minutes=SLOT_MINUTES)).isoformat()
+    time_max = (slots[-1] + timedelta(minutes=duration_minutes)).isoformat()
     body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": calendar_id}]}
     fb   = service.freebusy().query(body=body).execute()
     busy = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
@@ -104,8 +109,8 @@ def _busy_periods(service, calendar_id: str, slots: list[datetime]) -> list[tupl
     ]
 
 
-def _is_busy(slot: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
-    slot_end = slot + timedelta(minutes=SLOT_MINUTES)
+def _is_busy(slot: datetime, busy: list[tuple[datetime, datetime]], duration_minutes: int = SLOT_MINUTES) -> bool:
+    slot_end = slot + timedelta(minutes=duration_minutes)
     return any(slot < b_end and slot_end > b_start for b_start, b_end in busy)
 
 
@@ -156,19 +161,17 @@ class GoogleCalendarClient:
             f"Son las {now.strftime('%H:%M')} (hora Argentina)."
         )
 
-    def check_availability(self, count: int = 3) -> str:
+    def check_availability(self, count: int = 3, duration_minutes: int = SLOT_MINUTES) -> str:
         try:
-            # Generate enough candidates to find `count` distinct available days
-            candidates = _next_candidates(count * 10)
-            busy       = _busy_periods(self.service, self.calendar_id, candidates)
+            candidates = _next_candidates(count * 10, duration_minutes)
+            busy       = _busy_periods(self.service, self.calendar_id, candidates, duration_minutes)
 
-            # Filter out busy and locked slots
             free = [
                 s for s in candidates
-                if not _is_busy(s, busy) and not self._slot_locked(s.isoformat())
+                if not _is_busy(s, busy, duration_minutes) and not self._slot_locked(s.isoformat())
             ]
 
-            # Pick the first available slot of each calendar day (ART), up to `count`
+            # One slot per calendar day (ART), up to `count`
             seen_days: set = set()
             available: list = []
             for s in free:
@@ -197,6 +200,7 @@ class GoogleCalendarClient:
         reason: str,
         slot_iso: str,
         is_new_patient: bool = True,
+        duration_minutes: int = SLOT_MINUTES,
     ) -> str:
         owner = f"{patient_phone}:{slot_iso}"
 
@@ -209,7 +213,7 @@ class GoogleCalendarClient:
 
         try:
             slot_dt  = datetime.fromisoformat(slot_iso)
-            slot_end = slot_dt + timedelta(minutes=SLOT_MINUTES)
+            slot_end = slot_dt + timedelta(minutes=duration_minutes)
 
             # 2. Double-check against Calendar
             busy = _busy_periods(self.service, self.calendar_id, [slot_dt])
@@ -272,6 +276,20 @@ class GoogleCalendarClient:
             # while the patient is still in the same conversation.
             # Call _release_lock only on error paths if needed.
             pass
+
+    def get_treatment_info(self, treatment: str) -> str:
+        """
+        Looks up treatment duration and price from the sheets client.
+        The sheets client is injected via set_sheets() after construction.
+        Falls back to 30 min / price unknown if not configured.
+        """
+        if not hasattr(self, "_sheets") or self._sheets is None:
+            return json.dumps({"duration_minutes": 30, "price": None, "note": "Sin hoja de tratamientos configurada"})
+        return self._sheets.get_treatment_info(treatment)
+
+    def set_sheets(self, sheets_client) -> None:
+        """Inject the sheets client for treatment lookups."""
+        self._sheets = sheets_client
 
     def get_appointment(self, patient_name: str, date_hint: Optional[str] = None) -> str:
         try:

@@ -28,6 +28,7 @@ def build_calendar_tools(calendar) -> list[dict]:
     """
     return [
         _make_get_current_date_hour(calendar),
+        _make_get_treatment_info(calendar),
         _make_check_availability(calendar),
         _make_book_appointment(calendar),
         _make_get_appointment(calendar),
@@ -67,8 +68,8 @@ def _make_get_current_date_hour(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_check_availability(calendar) -> dict:
-    def handler(count: int = 3) -> str:
-        return calendar.check_availability(count=min(count, 5))
+    def handler(count: int = 3, duration_minutes: int = 30) -> str:
+        return calendar.check_availability(count=min(count, 5), duration_minutes=duration_minutes)
 
     return {
         "definition": {
@@ -76,7 +77,8 @@ def _make_check_availability(calendar) -> dict:
             "description": (
                 "Devuelve los próximos turnos disponibles en el consultorio. "
                 "Llamar SIEMPRE antes de ofrecer horarios al paciente. "
-                "NUNCA ofrecer horarios sin llamar esta herramienta primero."
+                "NUNCA ofrecer horarios sin llamar esta herramienta primero. "
+                "Si ya llamaste get_treatment_info, pasá el duration_minutes obtenido."
             ),
             "input_schema": {
                 "type": "object",
@@ -85,7 +87,12 @@ def _make_check_availability(calendar) -> dict:
                         "type": "integer",
                         "description": "Cantidad de turnos a mostrar (default 3, max 5)",
                         "default": 3,
-                    }
+                    },
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "Duración del turno en minutos (obtenido de get_treatment_info). Default 30.",
+                        "default": 30,
+                    },
                 },
                 "required": [],
             },
@@ -106,6 +113,7 @@ def _make_book_appointment(calendar) -> dict:
         reason: str,
         slot_iso: str,
         is_new_patient: bool = True,
+        duration_minutes: int = 30,
     ) -> str:
         return calendar.book_appointment(
             patient_name=patient_name,
@@ -114,6 +122,7 @@ def _make_book_appointment(calendar) -> dict:
             reason=reason,
             slot_iso=slot_iso,
             is_new_patient=is_new_patient,
+            duration_minutes=duration_minutes,
         )
 
     return {
@@ -154,6 +163,11 @@ def _make_book_appointment(calendar) -> dict:
                         "type": "boolean",
                         "description": "True si es la primera vez que viene al consultorio",
                         "default": True,
+                    },
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "Duración del turno en minutos (obtenido de get_treatment_info). Default 30.",
+                        "default": 30,
                     },
                 },
                 "required": [
@@ -276,6 +290,37 @@ def _make_reschedule_appointment(calendar) -> dict:
                     },
                 },
                 "required": ["event_id", "new_slot_iso"],
+            },
+        },
+        "handler": handler,
+    }
+
+
+# ---------------------------------------------------------------------------
+# get_treatment_info
+# ---------------------------------------------------------------------------
+
+def _make_get_treatment_info(calendar) -> dict:
+    def handler(treatment: str) -> str:
+        return calendar.get_treatment_info(treatment)
+
+    return {
+        "definition": {
+            "name": "get_treatment_info",
+            "description": (
+                "Devuelve la duración en minutos y el precio de un tratamiento odontológico. "
+                "Llamar ANTES de check_availability cuando el paciente dice el motivo de consulta, "
+                "para pasar el duration_minutes correcto a check_availability y book_appointment."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "treatment": {
+                        "type": "string",
+                        "description": "Nombre del tratamiento (ej: 'limpieza', 'extracción', 'conducto')",
+                    }
+                },
+                "required": ["treatment"],
             },
         },
         "handler": handler,

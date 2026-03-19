@@ -239,11 +239,9 @@ class GoogleCalendarClient:
                     "dateTime": slot_end.isoformat(),
                     "timeZone": "America/Argentina/Cordoba",
                 },
-                "attendees": [{"email": patient_email}],
                 "reminders": {
                     "useDefault": False,
                     "overrides": [
-                        {"method": "email", "minutes": 60 * 24},  # 24h before
                         {"method": "popup", "minutes": 60},
                     ],
                 },
@@ -251,7 +249,7 @@ class GoogleCalendarClient:
             created  = self.service.events().insert(
                 calendarId=self.calendar_id,
                 body=event,
-                sendUpdates="all",   # sends confirmation email to attendee
+                sendUpdates="none",
             ).execute()
             event_id = created["id"]
 

@@ -30,7 +30,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Any
 
 from app.clients.models import ClientConfig
-from app.integrations.padel_calendar import PadelCalendar, PadelSlotError
+from app.integrations.padel_calendar import PadelCalendarClient, PadelCalendarError
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def _make_get_current_date_hour() -> dict:
 # ── build_padel_tools ─────────────────────────────────────────────────────────
 
 
-def build_padel_tools(padel: PadelCalendar, config: ClientConfig) -> list[dict]:
+def build_padel_tools(padel: PadelCalendarClient, config: ClientConfig) -> list[dict]:
     """
     Return all padel tool dicts ready to extend build_tools() output.
     """
@@ -125,7 +125,7 @@ def build_padel_tools(padel: PadelCalendar, config: ClientConfig) -> list[dict]:
 # ── get_availability ──────────────────────────────────────────────────────────
 
 
-def _make_get_availability(padel: PadelCalendar) -> dict:
+def _make_get_availability(padel: PadelCalendarClient) -> dict:
     def handler(fecha: str, hora: str, cancha: str | None = None) -> str:
         try:
             d = _parse_date(fecha)
@@ -142,7 +142,7 @@ def _make_get_availability(padel: PadelCalendar) -> dict:
 
         try:
             result = padel.get_availability(d, time_norm, cancha)
-        except PadelSlotError as exc:
+        except PadelCalendarError as exc:
             return str(exc)
 
         if cancha is not None:
@@ -205,7 +205,7 @@ def _make_get_availability(padel: PadelCalendar) -> dict:
 # ── create_booking ────────────────────────────────────────────────────────────
 
 
-def _make_create_booking(padel: PadelCalendar) -> dict:
+def _make_create_booking(padel: PadelCalendarClient) -> dict:
     def handler(
         fecha: str,
         hora: str,
@@ -229,17 +229,17 @@ def _make_create_booking(padel: PadelCalendar) -> dict:
         try:
             booking_id = padel.create_booking(
                 d=d,
-                time=time_norm,
+                time_str=time_norm,
                 cancha=cancha.strip(),
                 name=nombre.strip(),
                 phone=telefono.strip(),
             )
-        except PadelSlotError as exc:
+        except PadelCalendarError as exc:
             # Slot taken or invalid — show alternatives at that time
             try:
                 avail = padel.get_availability(d, time_norm)
                 free: list[str] = avail.get("available", [])
-            except PadelSlotError:
+            except PadelCalendarError:
                 free = []
 
             msg = str(exc) + "\n\n"
@@ -301,11 +301,11 @@ def _make_create_booking(padel: PadelCalendar) -> dict:
 # ── cancel_booking ────────────────────────────────────────────────────────────
 
 
-def _make_cancel_booking(padel: PadelCalendar) -> dict:
+def _make_cancel_booking(padel: PadelCalendarClient) -> dict:
     def handler(booking_id: str) -> str:
         try:
             found = padel.cancel_booking(booking_id.strip())
-        except PadelSlotError as exc:
+        except PadelCalendarError as exc:
             return str(exc)
 
         if not found:
@@ -402,7 +402,7 @@ def _make_get_hours(config: ClientConfig) -> dict:
 
 
 def build_padel_payment_tool(
-    padel: PadelCalendar,
+    padel: PadelCalendarClient,
     config: ClientConfig,
     redis: Any,
     user_phone: str,

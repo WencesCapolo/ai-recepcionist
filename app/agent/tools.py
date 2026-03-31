@@ -63,11 +63,15 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
         all_tools["get_insurances"]     = _make_get_insurances(sheets, config.prices_sheet_id)
     # ── Padel tools ───────────────────────────────────────────────────────────
     _PADEL_TRIGGER = {"get_availability", "create_booking", "cancel_booking"}
-    if _PADEL_TRIGGER & set(config.tools_enabled) and redis is not None:
+    if _PADEL_TRIGGER & set(config.tools_enabled) and redis is not None and config.calendar_id:
         from app.agent.padel_tools import build_padel_tools, build_padel_payment_tool
-        from app.integrations.padel_calendar import PadelCalendar
+        from app.integrations.padel_calendar import PadelCalendarClient
 
-        _padel = PadelCalendar(redis=redis, client_id=client_id or str(config.id))
+        _padel = PadelCalendarClient(
+            calendar_id=config.calendar_id,
+            redis=redis,
+            client_id=client_id or str(config.id),
+        )
         for pt in build_padel_tools(_padel, config):
             all_tools[pt["definition"]["name"]] = pt
 

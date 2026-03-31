@@ -1,245 +1,251 @@
 """
-padel_calendar.py — Redis-backed calendar for padel court bookings.
+padel_calendar.py — Google Calendar backend for padel court bookings.
 
-Three courts: "Cancha 1" (techada), "Cancha 2" (techada), "Cancha 3" (aire libre).
-Slots: Mon–Fri 08:00–23:00, Sat–Sun 08:00–22:00, every 60 min.
-
-Pre-seeded taken slots per weekday keep the demo looking realistic.
-Real bookings are written to Redis with a 30-day TTL.
-Cancellations use a booking_id returned at creation time.
+Three courts share a single Google Calendar.
+Court name is embedded in the event summary to allow per-court availability checks.
+Redis is used only for slot locking (same pattern as calendar.py).
+Booking metadata is stored in Redis so the payment link tool can look it up.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+
+from app.integrations.calendar import _get_service
 
 logger = logging.getLogger(__name__)
 
-# ── constants ────────────────────────────────────────────────────────────────
-
 COURTS: list[str] = ["Cancha 1", "Cancha 2", "Cancha 3"]
-SLOT_DURATION_MIN = 60
+SLOT_MINUTES = 60
+ART = timezone(timedelta(hours=-3))
+LOCK_TTL = 300        # seconds — slot reservation window
 BOOKING_TTL = 30 * 24 * 3600  # 30 days
 
-# Pre-seeded "already taken" slots per weekday: {weekday: [(time, cancha), ...]}
-_PRESEED: dict[int, list[tuple[str, str]]] = {
-    0: [("09:00", "Cancha 1"), ("11:00", "Cancha 2"), ("20:00", "Cancha 3")],
-    1: [("10:00", "Cancha 1"), ("10:00", "Cancha 2"), ("19:00", "Cancha 1")],
-    2: [("09:00", "Cancha 3"), ("14:00", "Cancha 1"), ("21:00", "Cancha 2")],
-    3: [("11:00", "Cancha 2"), ("15:00", "Cancha 3"), ("20:00", "Cancha 1")],
-    4: [("09:00", "Cancha 1"), ("13:00", "Cancha 3"), ("19:00", "Cancha 2")],
-    5: [("10:00", "Cancha 1"), ("12:00", "Cancha 2"), ("16:00", "Cancha 3")],
-    6: [("09:00", "Cancha 2"), ("11:00", "Cancha 1"), ("15:00", "Cancha 3")],
-}
+
+def resolve_cancha(cancha: str) -> str:
+    """Case-insensitive match against COURTS. Raises PadelCalendarError if not found."""
+    normalised = cancha.strip().lower()
+    for court in COURTS:
+        if court.lower() == normalised:
+            return court
+    raise PadelCalendarError(
+        f"La cancha '{cancha}' no existe. Las opciones son: " + ", ".join(COURTS) + "."
+    )
 
 
-def _build_slots(start_h: int, end_h: int) -> list[str]:
-    slots: list[str] = []
-    current = datetime(2000, 1, 1, start_h, 0)
-    stop = datetime(2000, 1, 1, end_h, 0)
-    while current < stop:
-        slots.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=SLOT_DURATION_MIN)
-    return slots
-
-
-WEEKDAY_SLOTS: list[str] = _build_slots(8, 23)  # 08:00–22:00 (last starts 22:00)
-WEEKEND_SLOTS: list[str] = _build_slots(8, 22)  # 08:00–21:00 (last starts 21:00)
-
-
-class PadelCalendar:
+class PadelCalendarClient:
     """
-    Padel court calendar backed by Redis.
+    Padel court calendar backed by Google Calendar.
 
-    Redis key patterns:
-      padel:slot:{client_id}:{date_iso}:{time}:{cancha_norm}
-          value: booking_id string — TTL: BOOKING_TTL
+    All three courts share one calendar_id.
+    Events are titled "{cancha} — {name}" so availability checks can
+    filter by court name.
 
-      padel:booking:{client_id}:{booking_id}
-          value: JSON {date, time, cancha, name, phone, booked_at} — TTL: BOOKING_TTL
+    Redis key patterns (mirrors calendar.py):
+      slot_lock:{client_id}:{date_iso}:{time}:{cancha_norm}  — LOCK_TTL
+      padel:booking:{client_id}:{event_id}                   — BOOKING_TTL
     """
 
-    def __init__(self, redis: Any, client_id: str) -> None:
+    def __init__(self, calendar_id: str, redis: Any, client_id: str) -> None:
+        self.calendar_id = calendar_id.strip()
         self._redis = redis
         self._client_id = client_id
+        self._service = None
 
-    # ── internal helpers ─────────────────────────────────────────────────────
+    @property
+    def service(self):
+        if self._service is None:
+            self._service = _get_service()
+        return self._service
 
-    @staticmethod
-    def _cancha_norm(cancha: str) -> str:
-        """'Cancha 1' → 'cancha1' for use in Redis keys."""
-        return "".join(c for c in cancha.lower() if c.isalnum())
+    # ── Redis slot locking ────────────────────────────────────────────────────
 
-    @staticmethod
-    def resolve_cancha(cancha: str) -> str:
-        """Case-insensitive match against COURTS. Raises PadelSlotError if not found."""
-        normalised = cancha.strip().lower()
-        for court in COURTS:
-            if court.lower() == normalised:
-                return court
-        raise PadelSlotError(
-            f"La cancha '{cancha}' no existe. Las opciones son: "
-            + ", ".join(COURTS) + "."
+    def _lock_key(self, date_iso: str, time_str: str, cancha: str) -> str:
+        norm = "".join(c for c in cancha.lower() if c.isalnum())
+        return f"slot_lock:{self._client_id}:{date_iso}:{time_str}:{norm}"
+
+    def _acquire_lock(self, date_iso: str, time_str: str, cancha: str, owner: str) -> bool:
+        key = self._lock_key(date_iso, time_str, cancha)
+        return bool(self._redis.set(key, owner, nx=True, ex=LOCK_TTL))
+
+    def _slot_locked(self, date_iso: str, time_str: str, cancha: str) -> bool:
+        return bool(self._redis.exists(self._lock_key(date_iso, time_str, cancha)))
+
+    def _release_lock(self, date_iso: str, time_str: str, cancha: str) -> None:
+        self._redis.delete(self._lock_key(date_iso, time_str, cancha))
+
+    # ── Booking metadata (for payment link lookups) ───────────────────────────
+
+    def _store_booking_meta(
+        self,
+        event_id: str,
+        date_iso: str,
+        time_str: str,
+        cancha: str,
+        name: str,
+        phone: str,
+    ) -> None:
+        key = f"padel:booking:{self._client_id}:{event_id}"
+        self._redis.set(
+            key,
+            json.dumps({"date": date_iso, "time": time_str, "cancha": cancha, "name": name, "phone": phone}),
+            ex=BOOKING_TTL,
         )
 
-    def _slot_key(self, date_iso: str, time: str, cancha: str) -> str:
-        return f"padel:slot:{self._client_id}:{date_iso}:{time}:{self._cancha_norm(cancha)}"
-
-    def _booking_key(self, booking_id: str) -> str:
-        return f"padel:booking:{self._client_id}:{booking_id}"
-
-    def valid_slots(self, d: date) -> list[str]:
-        return WEEKEND_SLOTS if d.weekday() >= 5 else WEEKDAY_SLOTS
-
-    def _is_preseed_taken(self, d: date, time: str, cancha: str) -> bool:
-        for t, c in _PRESEED.get(d.weekday(), []):
-            if t == time and c == cancha:
-                return True
-        return False
-
-    def _is_redis_taken(self, date_iso: str, time: str, cancha: str) -> bool:
-        key = self._slot_key(date_iso, time, cancha)
-        try:
-            return self._redis.exists(key) == 1
-        except Exception:
-            logger.warning("Redis error checking padel slot %s %s %s", date_iso, time, cancha)
-            return False
-
-    def _is_taken(self, d: date, time: str, cancha: str) -> bool:
-        return self._is_preseed_taken(d, time, cancha) or self._is_redis_taken(
-            d.isoformat(), time, cancha
-        )
-
-    # ── public API ───────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def get_availability(
-        self, d: date, time: str, cancha: str | None = None
+        self, d: date, time_str: str, cancha: str | None = None
     ) -> dict:
         """
-        Check availability at a specific time.
+        Check which courts are free at a specific date and time.
 
-        Returns:
-          No cancha: {"time": "19:00", "available": ["Cancha 1", "Cancha 3"]}
-          With cancha: {"time": "19:00", "cancha": "Cancha 1", "available": True/False}
+        No cancha → {"time": "19:00", "available": ["Cancha 1", "Cancha 3"]}
+        With cancha → {"time": "19:00", "cancha": "Cancha 1", "available": True/False}
         """
-        slots = self.valid_slots(d)
-        if time not in slots:
-            raise PadelSlotError(
-                f"El horario '{time}' no es válido para ese día. "
-                f"Los turnos son cada hora de {slots[0]} a {slots[-1]}."
-            )
+        h, m = int(time_str.split(":")[0]), int(time_str.split(":")[1])
+        slot_start = datetime(d.year, d.month, d.day, h, m, tzinfo=ART)
+        slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
+
+        try:
+            items = self.service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=slot_start.isoformat(),
+                timeMax=slot_end.isoformat(),
+                singleEvents=True,
+            ).execute().get("items", [])
+        except Exception as exc:
+            logger.error("get_availability error: %s", exc)
+            raise PadelCalendarError(
+                "No pude verificar la disponibilidad. Intentá más tarde."
+            ) from exc
+
+        busy_courts: set[str] = set()
+        for event in items:
+            summary = event.get("summary", "")
+            for court in COURTS:
+                if court.lower() in summary.lower():
+                    busy_courts.add(court)
+
+        date_iso = d.isoformat()
 
         if cancha is not None:
-            resolved = self.resolve_cancha(cancha)
+            resolved = resolve_cancha(cancha)
+            locked = self._slot_locked(date_iso, time_str, resolved)
             return {
-                "time": time,
+                "time": time_str,
                 "cancha": resolved,
-                "available": not self._is_taken(d, time, resolved),
+                "available": resolved not in busy_courts and not locked,
             }
 
-        free = [c for c in COURTS if not self._is_taken(d, time, c)]
-        return {"time": time, "available": free}
+        free = [
+            c for c in COURTS
+            if c not in busy_courts and not self._slot_locked(date_iso, time_str, c)
+        ]
+        return {"time": time_str, "available": free}
 
     def create_booking(
         self,
         d: date,
-        time: str,
+        time_str: str,
         cancha: str,
         name: str,
         phone: str,
     ) -> str:
         """
-        Reserve a court slot. Returns the booking_id on success.
-        Raises PadelSlotError if the slot is taken, invalid, or on infra error.
+        Create a Google Calendar event. Returns the event ID as booking_id.
+        Raises PadelCalendarError on conflict or infra error.
         """
-        slots = self.valid_slots(d)
-        if time not in slots:
-            raise PadelSlotError(
-                f"El horario '{time}' no es válido para ese día. "
-                f"Los turnos son cada hora de {slots[0]} a {slots[-1]}."
-            )
-        resolved = self.resolve_cancha(cancha)
-
-        if self._is_taken(d, time, resolved):
-            raise PadelSlotError(f"La {resolved} ya está ocupada a las {time}.")
-
-        booking_id = str(uuid.uuid4())[:8]
+        resolved = resolve_cancha(cancha)
         date_iso = d.isoformat()
-        slot_key = self._slot_key(date_iso, time, resolved)
-        booking_meta = json.dumps({
-            "date": date_iso,
-            "time": time,
-            "cancha": resolved,
-            "name": name,
-            "phone": phone,
-            "booked_at": datetime.utcnow().isoformat(),
-        })
+        owner = f"{phone}:{date_iso}:{time_str}:{resolved}"
+
+        if not self._acquire_lock(date_iso, time_str, resolved, owner):
+            raise PadelCalendarError(
+                f"La {resolved} está siendo reservada en este momento. Intentá en unos segundos."
+            )
 
         try:
-            result = self._redis.set(slot_key, booking_id, ex=BOOKING_TTL, nx=True)
-            if result is None:
-                raise PadelSlotError(f"La {resolved} ya está ocupada a las {time}.")
-            self._redis.set(self._booking_key(booking_id), booking_meta, ex=BOOKING_TTL)
-        except PadelSlotError:
+            avail = self.get_availability(d, time_str, resolved)
+            if not avail["available"]:
+                raise PadelCalendarError(f"La {resolved} ya está ocupada a las {time_str}.")
+
+            h, m = int(time_str.split(":")[0]), int(time_str.split(":")[1])
+            slot_start = datetime(d.year, d.month, d.day, h, m, tzinfo=ART)
+            slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
+
+            event = {
+                "summary": f"{resolved} — {name}",
+                "description": (
+                    f"Cliente: {name}\n"
+                    f"Teléfono: {phone}\n"
+                    f"Cancha: {resolved}\n"
+                    f"Agendado via WhatsApp Bot"
+                ),
+                "start": {
+                    "dateTime": slot_start.isoformat(),
+                    "timeZone": "America/Argentina/Cordoba",
+                },
+                "end": {
+                    "dateTime": slot_end.isoformat(),
+                    "timeZone": "America/Argentina/Cordoba",
+                },
+            }
+            created = self.service.events().insert(
+                calendarId=self.calendar_id,
+                body=event,
+                sendUpdates="none",
+            ).execute()
+            event_id = created["id"]
+
+            self._store_booking_meta(event_id, date_iso, time_str, resolved, name, phone)
+
+            logger.info(
+                "Padel booking created [client=%s court=%s date=%s time=%s name=%s event_id=%s]",
+                self._client_id, resolved, date_iso, time_str, name, event_id,
+            )
+            return event_id
+
+        except PadelCalendarError:
+            self._release_lock(date_iso, time_str, resolved)
             raise
         except Exception as exc:
-            logger.error(
-                "Redis error creating padel booking %s %s %s: %s",
-                date_iso, time, resolved, exc,
-            )
-            raise PadelSlotError(
-                "No se pudo confirmar la reserva por un error interno. Intentá de nuevo."
+            logger.error("create_booking error: %s", exc)
+            self._release_lock(date_iso, time_str, resolved)
+            raise PadelCalendarError(
+                "No pude confirmar la reserva. Intentá más tarde."
             ) from exc
-
-        logger.info(
-            "Padel booking created [client=%s id=%s date=%s time=%s cancha=%s name=%s]",
-            self._client_id, booking_id, date_iso, time, resolved, name,
-        )
-        return booking_id
 
     def cancel_booking(self, booking_id: str) -> bool:
         """
-        Cancel by booking_id. Returns True if found and deleted, False if not found.
-        Raises PadelSlotError on infrastructure errors.
+        Cancel by Google Calendar event ID.
+        Returns True if deleted, False if not found.
+        Raises PadelCalendarError on infra error.
         """
-        booking_key = self._booking_key(booking_id)
         try:
-            raw = self._redis.get(booking_key)
+            self.service.events().delete(
+                calendarId=self.calendar_id,
+                eventId=booking_id.strip(),
+                sendUpdates="none",
+            ).execute()
         except Exception as exc:
-            logger.error("Redis error fetching padel booking %s: %s", booking_id, exc)
-            raise PadelSlotError(
-                "No se pudo cancelar la reserva por un error interno. Intentá de nuevo."
-            ) from exc
-
-        if raw is None:
-            return False
-
-        try:
-            meta = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            logger.error("Corrupt padel booking metadata for %s", booking_id)
-            return False
-
-        slot_key = self._slot_key(meta["date"], meta["time"], meta["cancha"])
-        try:
-            self._redis.delete(slot_key)
-            self._redis.delete(booking_key)
-        except Exception as exc:
-            logger.error("Redis error deleting padel booking %s: %s", booking_id, exc)
-            raise PadelSlotError(
-                "No se pudo cancelar la reserva por un error interno. Intentá de nuevo."
+            err_str = str(exc)
+            if "404" in err_str or "notFound" in err_str.lower():
+                return False
+            logger.error("cancel_booking error: %s", exc)
+            raise PadelCalendarError(
+                "No pude cancelar la reserva. Intentá más tarde o contactá al complejo."
             ) from exc
 
         logger.info(
-            "Padel booking cancelled [client=%s id=%s date=%s time=%s cancha=%s]",
-            self._client_id, booking_id, meta["date"], meta["time"], meta["cancha"],
+            "Padel booking cancelled [client=%s event_id=%s]",
+            self._client_id, booking_id,
         )
         return True
 
 
-class PadelSlotError(Exception):
-    """Raised for invalid inputs or infrastructure errors."""
+class PadelCalendarError(Exception):
+    """Raised for booking conflicts, invalid inputs, or infrastructure errors."""

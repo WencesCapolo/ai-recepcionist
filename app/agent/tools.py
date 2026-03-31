@@ -61,6 +61,28 @@ def build_tools(config: ClientConfig, sheets: SheetsClient, redis: Any = None, u
         all_tools["get_treatment_info"] = _make_get_treatment_info(sheets, config.prices_sheet_id)
         all_tools["get_prices"]         = _make_get_prices_dentist(sheets, config.prices_sheet_id)
         all_tools["get_insurances"]     = _make_get_insurances(sheets, config.prices_sheet_id)
+    # ── Padel tools ───────────────────────────────────────────────────────────
+    _PADEL_TRIGGER = {"get_availability", "create_booking", "cancel_booking"}
+    if _PADEL_TRIGGER & set(config.tools_enabled) and redis is not None:
+        from app.agent.padel_tools import build_padel_tools, build_padel_payment_tool
+        from app.integrations.padel_calendar import PadelCalendar
+
+        _padel = PadelCalendar(redis=redis, client_id=client_id or str(config.id))
+        for pt in build_padel_tools(_padel, config):
+            all_tools[pt["definition"]["name"]] = pt
+
+        if (
+            config.mp_access_token
+            and user_phone
+            and "generate_padel_payment_link" in config.tools_enabled
+        ):
+            all_tools["generate_padel_payment_link"] = build_padel_payment_tool(
+                padel=_padel,
+                config=config,
+                redis=redis,
+                user_phone=user_phone,
+                client_id=client_id or str(config.id),
+            )
 
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]
 

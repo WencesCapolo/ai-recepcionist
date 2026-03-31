@@ -29,7 +29,6 @@ import logging
 from datetime import date, datetime, timezone, timedelta
 from typing import Any
 
-from app.agent.calendar_tools import _make_get_current_date_hour  # reuse identical factory
 from app.clients.models import ClientConfig
 from app.integrations.padel_calendar import PadelCalendar, PadelSlotError
 
@@ -44,7 +43,6 @@ _MONTHS_ES = [
 _DAYS_ES = [
     "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo",
 ]
-
 
 def _parse_date(date_str: str) -> date:
     try:
@@ -69,6 +67,42 @@ def _normalise_time(time_str: str) -> str:
             f"El horario '{time_str}' no tiene el formato correcto. "
             "Usá HH:MM (por ejemplo, 09:00)."
         )
+
+
+# ── get_current_date_hour ─────────────────────────────────────────────────────
+
+
+def _make_get_current_date_hour() -> dict:
+    def handler() -> str:
+        now = datetime.now(_ART)
+        day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        month_names = [
+            "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        ]
+        return (
+            f"Hoy es {day_names[now.weekday()]} {now.day} de {month_names[now.month]} de {now.year} "
+            f"({now.strftime('%Y-%m-%d')}). "
+            f"La hora actual en Argentina es {now.strftime('%H:%M')}."
+        )
+
+    return {
+        "definition": {
+            "name": "get_current_date_hour",
+            "description": (
+                "Devuelve la fecha y hora actual en Argentina (ART, UTC-3). "
+                "Llamá a esta herramienta antes de usar get_availability o "
+                "create_booking cuando el cliente use referencias relativas "
+                "como 'hoy', 'mañana', 'esta semana' o 'lo más pronto posible'."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        "handler": handler,
+    }
 
 
 # ── build_padel_tools ─────────────────────────────────────────────────────────

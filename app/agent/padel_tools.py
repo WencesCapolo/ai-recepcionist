@@ -31,18 +31,11 @@ from typing import Any
 
 from app.clients.models import ClientConfig
 from app.integrations.padel_calendar import PadelCalendarClient, PadelCalendarError
+from app.integrations.argentina import ART as _ART, fmt_date as _friendly_date
 
 logger = logging.getLogger(__name__)
 
-_ART = timezone(timedelta(hours=-3))
 
-_MONTHS_ES = [
-    "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-]
-_DAYS_ES = [
-    "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo",
-]
 
 def _parse_date(date_str: str) -> date:
     try:
@@ -54,8 +47,7 @@ def _parse_date(date_str: str) -> date:
         )
 
 
-def _friendly_date(d: date) -> str:
-    return f"{_DAYS_ES[d.weekday()]} {d.day} de {_MONTHS_ES[d.month]} de {d.year}"
+
 
 
 def _normalise_time(time_str: str) -> str:
@@ -73,7 +65,7 @@ def _normalise_time(time_str: str) -> str:
 
 
 def _make_get_current_date_hour() -> dict:
-    def handler() -> str:
+    async def handler() -> str:
         now = datetime.now(_ART)
         day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
         month_names = [
@@ -126,7 +118,7 @@ def build_padel_tools(padel: PadelCalendarClient, config: ClientConfig) -> list[
 
 
 def _make_get_availability(padel: PadelCalendarClient) -> dict:
-    def handler(fecha: str, hora: str, cancha: str | None = None) -> str:
+    async def handler(fecha: str, hora: str, cancha: str | None = None) -> str:
         try:
             d = _parse_date(fecha)
         except ValueError as exc:
@@ -206,7 +198,7 @@ def _make_get_availability(padel: PadelCalendarClient) -> dict:
 
 
 def _make_create_booking(padel: PadelCalendarClient) -> dict:
-    def handler(
+    async def handler(
         fecha: str,
         hora: str,
         cancha: str,
@@ -302,7 +294,7 @@ def _make_create_booking(padel: PadelCalendarClient) -> dict:
 
 
 def _make_cancel_booking(padel: PadelCalendarClient) -> dict:
-    def handler(booking_id: str) -> str:
+    async def handler(booking_id: str) -> str:
         try:
             found = padel.cancel_booking(booking_id.strip())
         except PadelCalendarError as exc:
@@ -341,7 +333,7 @@ def _make_cancel_booking(padel: PadelCalendarClient) -> dict:
 
 
 def _make_get_price(config: ClientConfig) -> dict:
-    def handler(tipo_turno: str) -> str:
+    async def handler(tipo_turno: str) -> str:
         query = tipo_turno.strip().lower()
         for line in config.system_prompt.splitlines():
             line_lower = line.strip().lower()
@@ -378,7 +370,7 @@ def _make_get_price(config: ClientConfig) -> dict:
 
 
 def _make_get_hours(config: ClientConfig) -> dict:
-    def handler() -> str:
+    async def handler() -> str:
         for line in config.system_prompt.splitlines():
             if line.strip().lower().startswith("horario"):
                 return line.strip()

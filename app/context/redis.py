@@ -28,6 +28,10 @@ class ConversationContext:
     def __init__(self, redis_client: Redis) -> None:
         self._redis = redis_client
 
+    @property
+    def redis(self) -> Redis:
+        return self._redis
+
     # ------------------------------------------------------------------
     # Key helpers
     # ------------------------------------------------------------------
@@ -185,29 +189,4 @@ class ConversationContext:
                     logger.warning(f"Lock release failed [{client_id}:{user_phone}]: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton — used by handler.py and injected via FastAPI Depends
-# ---------------------------------------------------------------------------
 
-_redis_client = Redis(
-    url=settings.UPSTASH_REDIS_REST_URL,
-    token=settings.UPSTASH_REDIS_REST_TOKEN,
-)
-
-conversation_context = ConversationContext(_redis_client)
-
-# ---------------------------------------------------------------------------
-# Module-level shims — kept for callers that haven't migrated to the class yet
-# ---------------------------------------------------------------------------
-
-def load_history(client_id: str, user_phone: str) -> ConversationHistory:
-    return conversation_context.load_history(client_id, user_phone)
-
-def save_history(client_id: str, user_phone: str, history: ConversationHistory) -> None:
-    conversation_context.save_history(client_id, user_phone, history)
-
-def append_message(history: ConversationHistory, message: Message) -> ConversationHistory:
-    return ConversationContext.append_message(history, message)
-
-def is_duplicate(message_id: str) -> bool:
-    return conversation_context.is_duplicate(message_id)

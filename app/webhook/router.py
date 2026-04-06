@@ -20,7 +20,7 @@ async def verify_webhook(
     hub_verify_token: str = Query(None, alias="hub.verify_token"),
     hub_challenge: str = Query(None, alias="hub.challenge"),
 ):
-    if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token:
+    if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token.get_secret_value():
         return PlainTextResponse(content=hub_challenge)
     raise HTTPException(status_code=403, detail="Invalid verification token")
 
@@ -42,6 +42,7 @@ async def receive_message(
         payload=payload,
         background_tasks=background_tasks,
         get_client_by_phone=client_service.get_client_by_phone,
+        conversation_context=conversation_context,
         conversation_service=conversation_service,
         whatsapp_client=whatsapp_client,
         sheets_client=sheets_client,

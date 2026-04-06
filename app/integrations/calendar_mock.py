@@ -13,57 +13,71 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from app.integrations.argentina import ART, fmt_datetime as _fmt
+from app.integrations.calendar_config import (
+    DEFAULT_SLOT_MINUTES as SLOT_MINUTES,
+    DEFAULT_WORK_START as WORK_START,
+    DEFAULT_WORK_END as WORK_END,
+    DEFAULT_WORK_DAYS as WORK_DAYS,
+)
 
 logger = logging.getLogger(__name__)
 
-SLOT_MINUTES = 30
-WORK_START   = 10
-WORK_END     = 18
-WORK_DAYS    = {0, 1, 2, 3, 4}
-ART          = timezone(timedelta(hours=-3))
+
 
 # Pre-blocked slots for demo realism (relative offsets in hours from now)
 _DEMO_BUSY_OFFSETS = [3, 5, 27, 28]
 
 
-def _fmt(dt: datetime) -> str:
-    art    = dt.astimezone(ART)
-    days   = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-    months = [
-        "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
-        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-    ]
-    return f"{days[art.weekday()]} {art.day} de {months[art.month]} a las {art.strftime('%H:%M')}"
 
 
-def _next_candidates(n: int) -> list[datetime]:
+
+def _next_candidates(
+    n: int,
+    slot_minutes: int = SLOT_MINUTES,
+    work_start: int = WORK_START,
+    work_end: int = WORK_END,
+    work_days: set[int] | frozenset[int] = frozenset(WORK_DAYS),
+) -> list[datetime]:
     now       = datetime.now(tz=ART)
     start     = now + timedelta(hours=2)
-    remainder = start.minute % SLOT_MINUTES
+    remainder = start.minute % slot_minutes
     if remainder:
-        start += timedelta(minutes=(SLOT_MINUTES - remainder))
+        start += timedelta(minutes=(slot_minutes - remainder))
     start = start.replace(second=0, microsecond=0)
 
     slots, cursor = [], start
     while len(slots) < n * 3:
-        if cursor.weekday() in WORK_DAYS and WORK_START <= cursor.hour < WORK_END:
+        if cursor.weekday() in work_days and work_start <= cursor.hour < work_end:
             slots.append(cursor)
-        cursor += timedelta(minutes=SLOT_MINUTES)
-        if cursor.hour >= WORK_END:
+        cursor += timedelta(minutes=slot_minutes)
+        if cursor.hour >= work_end:
             cursor = (cursor + timedelta(days=1)).replace(
-                hour=WORK_START, minute=0, second=0
+                hour=work_start, minute=0, second=0
             )
-        while cursor.weekday() not in WORK_DAYS:
+        while cursor.weekday() not in work_days:
             cursor += timedelta(days=1)
     return slots
 
 
 class CalendarMock:
-    def __init__(self, redis, client_id: str):
+    def __init__(
+        self,
+        redis,
+        client_id: str,
+        slot_minutes: int = SLOT_MINUTES,
+        work_start: int = WORK_START,
+        work_end: int = WORK_END,
+        work_days: set[int] | frozenset[int] = frozenset(WORK_DAYS),
+    ):
         self.redis     = redis
         self.client_id = client_id
+        self.slot_minutes = slot_minutes
+        self.work_start   = work_start
+        self.work_end     = work_end
+        self.work_days    = frozenset(work_days)
 
     # ── Internal keys ─────────────────────────────────────────────────────────
 
@@ -88,9 +102,9 @@ class CalendarMock:
         busy = set()
         for offset in _DEMO_BUSY_OFFSETS:
             candidate = now + timedelta(hours=offset)
-            remainder = candidate.minute % SLOT_MINUTES
+            remainder = candidate.minute % self.slot_minutes
             if remainder:
-                candidate += timedelta(minutes=(SLOT_MINUTES - remainder))
+                candidate += timedelta(minutes=(self.slot_minutes - remainder))
             candidate = candidate.replace(second=0, microsecond=0)
             busy.add(candidate.isoformat())
         return busy
@@ -110,7 +124,13 @@ class CalendarMock:
         )
 
     def check_availability(self, count: int = 3) -> str:
-        candidates = _next_candidates(count)
+        candidates = _next_candidates(
+            count,
+            slot_minutes=self.slot_minutes,
+            work_start=self.work_start,
+            work_end=self.work_end,
+            work_days=self.work_days,
+        )
         demo_busy  = self._demo_busy()
 
         # Also exclude slots already booked in Redis mock store

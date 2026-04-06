@@ -41,7 +41,7 @@ def build_calendar_tools(calendar) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _make_get_current_date_hour(calendar) -> dict:
-    def handler() -> str:
+    async def handler() -> str:
         return calendar.get_current_date_hour()
 
     return {
@@ -67,7 +67,7 @@ def _make_get_current_date_hour(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_check_availability(calendar) -> dict:
-    def handler(count: int = 3, duration_minutes: int = 30, after_hour: int = 0, before_hour: int = 24) -> str:
+    async def handler(count: int = 3, duration_minutes: int = 30, after_hour: int = 0, before_hour: int = 24) -> str:
         return calendar.check_availability(
             count=min(count, 5),
             duration_minutes=duration_minutes,
@@ -121,7 +121,7 @@ def _make_check_availability(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_book_appointment(calendar) -> dict:
-    def handler(
+    async def handler(
         patient_name: str,
         patient_phone: str,
         patient_email: str,
@@ -203,7 +203,7 @@ def _make_book_appointment(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_get_appointment(calendar) -> dict:
-    def handler(patient_name: str, date_hint: str = "") -> str:
+    async def handler(patient_name: str, date_hint: str = "") -> str:
         return calendar.get_appointment(
             patient_name=patient_name,
             date_hint=date_hint or None,
@@ -241,7 +241,7 @@ def _make_get_appointment(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_cancel_appointment(calendar) -> dict:
-    def handler(event_id: str, patient_name: str) -> str:
+    async def handler(event_id: str, patient_name: str) -> str:
         return calendar.cancel_appointment(
             event_id=event_id,
             patient_name=patient_name,
@@ -278,7 +278,7 @@ def _make_cancel_appointment(calendar) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_reschedule_appointment(calendar) -> dict:
-    def handler(event_id: str, new_slot_iso: str) -> str:
+    async def handler(event_id: str, new_slot_iso: str) -> str:
         return calendar.reschedule_appointment(
             event_id=event_id,
             new_slot_iso=new_slot_iso,

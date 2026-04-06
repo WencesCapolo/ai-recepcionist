@@ -146,11 +146,7 @@ def _make_tools_node():
                     logger.warning("Tool '%s' not found in handler_map", name)
                 else:
                     try:
-                        import inspect
-                        if inspect.iscoroutinefunction(handler):
-                            result = await handler(**args)
-                        else:
-                            result = handler(**args)
+                        result = await handler(**args)
                     except Exception as exc:
                         result = f"Error al ejecutar la herramienta: {exc}"
                         logger.exception("Tool '%s' raised an exception", name)
@@ -258,7 +254,7 @@ async def run_agent(
             messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": user_message})
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value())
     graph = _build_graph(client)
 
     initial_state: _AgentState = {

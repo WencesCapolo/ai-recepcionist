@@ -12,8 +12,16 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from app.integrations.argentina import ART, fmt_datetime as _fmt
+from app.integrations.calendar_config import (
+    DEFAULT_SLOT_MINUTES as SLOT_MINUTES,
+    DEFAULT_WORK_START as WORK_START,
+    DEFAULT_WORK_END as WORK_END,
+    DEFAULT_WORK_DAYS as WORK_DAYS,
+    SLOT_LOCK_TTL as LOCK_TTL,
+)
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -25,12 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SCOPES        = ["https://www.googleapis.com/auth/calendar"]
-SLOT_MINUTES   = 30
-WORK_START     = 10   # 10:00 ART
-WORK_END       = 18   # 18:00 ART
-WORK_DAYS      = {0, 1, 2, 3, 4}  # Mon–Fri
-LOCK_TTL       = 300  # seconds — slot reservation window
-ART            = timezone(timedelta(hours=-3))
 
 
 # ---------------------------------------------------------------------------
@@ -48,19 +50,13 @@ def _get_service():
     )
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-
-def _fmt(dt: datetime) -> str:
-    """'martes 18 de marzo a las 10:00'"""
-    art  = dt.astimezone(ART)
-    days = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-    months = [
-        "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
-        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-    ]
-    return f"{days[art.weekday()]} {art.day} de {months[art.month]} a las {art.strftime('%H:%M')}"
-
-
-def _next_candidates(n: int, duration_minutes: int = SLOT_MINUTES) -> list[datetime]:
+def _next_candidates(
+    n: int,
+    duration_minutes: int = SLOT_MINUTES,
+    work_start: int = WORK_START,
+    work_end: int = WORK_END,
+    work_days: set[int] | frozenset[int] = frozenset(WORK_DAYS),
+) -> list[datetime]:
     """Return next n candidate slot datetimes in ART, starting ≥2h from now."""
     now       = datetime.now(tz=ART)
     start     = now + timedelta(hours=2)
@@ -75,20 +71,20 @@ def _next_candidates(n: int, duration_minutes: int = SLOT_MINUTES) -> list[datet
         cursor_art = cursor.astimezone(ART)
         slot_end_hour = (cursor_art + timedelta(minutes=duration_minutes)).hour
         fits_in_day = (
-            cursor_art.weekday() in WORK_DAYS
-            and WORK_START <= cursor_art.hour
-            and (cursor_art + timedelta(minutes=duration_minutes)).astimezone(ART).hour <= WORK_END
+            cursor_art.weekday() in work_days
+            and work_start <= cursor_art.hour
+            and (cursor_art + timedelta(minutes=duration_minutes)).astimezone(ART).hour <= work_end
             and (cursor_art + timedelta(minutes=duration_minutes)).astimezone(ART).date() == cursor_art.date()
         )
         if fits_in_day:
             slots.append(cursor_art)
         cursor += timedelta(minutes=SLOT_MINUTES)
         cursor_art = cursor.astimezone(ART)
-        if cursor_art.hour >= WORK_END:
+        if cursor_art.hour >= work_end:
             next_day = (cursor_art + timedelta(days=1)).replace(
-                hour=WORK_START, minute=0, second=0, microsecond=0
+                hour=work_start, minute=0, second=0, microsecond=0
             )
-            while next_day.weekday() not in WORK_DAYS:
+            while next_day.weekday() not in work_days:
                 next_day += timedelta(days=1)
             cursor = next_day
     return slots
@@ -113,16 +109,28 @@ def _is_busy(slot: datetime, busy: list[tuple[datetime, datetime]], duration_min
     slot_end = slot + timedelta(minutes=duration_minutes)
     return any(slot < b_end and slot_end > b_start for b_start, b_end in busy)
 
-
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
 class GoogleCalendarClient:
-    def __init__(self, calendar_id: str, redis, client_id: str):
+    def __init__(
+        self,
+        calendar_id: str,
+        redis,
+        client_id: str,
+        slot_minutes: int = SLOT_MINUTES,
+        work_start: int = WORK_START,
+        work_end: int = WORK_END,
+        work_days: set[int] | frozenset[int] = frozenset(WORK_DAYS),
+    ):
         self.calendar_id = calendar_id.strip()  # guard against trailing \r\n from Supabase
         self.redis       = redis
         self.client_id   = client_id
+        self.slot_minutes = slot_minutes
+        self.work_start   = work_start
+        self.work_end     = work_end
+        self.work_days    = frozenset(work_days)
         self._service    = None
 
     @property
@@ -164,17 +172,24 @@ class GoogleCalendarClient:
     def check_availability(
         self,
         count: int = 3,
-        duration_minutes: int = SLOT_MINUTES,
+        duration_minutes: Optional[int] = None,
         after_hour: int = 0,
         before_hour: int = 24,
     ) -> str:
+        actual_duration = duration_minutes if duration_minutes is not None else self.slot_minutes
         try:
-            candidates = _next_candidates(count * 10, duration_minutes)
-            busy       = _busy_periods(self.service, self.calendar_id, candidates, duration_minutes)
+            candidates = _next_candidates(
+                count * 10,
+                duration_minutes=actual_duration,
+                work_start=self.work_start,
+                work_end=self.work_end,
+                work_days=self.work_days,
+            )
+            busy       = _busy_periods(self.service, self.calendar_id, candidates, actual_duration)
 
             free = [
                 s for s in candidates
-                if not _is_busy(s, busy, duration_minutes)
+                if not _is_busy(s, busy, actual_duration)
                 and not self._slot_locked(s.isoformat())
                 and after_hour <= s.astimezone(ART).hour < before_hour
             ]
@@ -214,8 +229,9 @@ class GoogleCalendarClient:
         reason: str,
         slot_iso: str,
         is_new_patient: bool = True,
-        duration_minutes: int = SLOT_MINUTES,
+        duration_minutes: Optional[int] = None,
     ) -> str:
+        actual_duration = duration_minutes if duration_minutes is not None else self.slot_minutes
         owner = f"{patient_phone}:{slot_iso}"
 
         # 1. Acquire slot lock
@@ -227,7 +243,7 @@ class GoogleCalendarClient:
 
         try:
             slot_dt  = datetime.fromisoformat(slot_iso)
-            slot_end = slot_dt + timedelta(minutes=duration_minutes)
+            slot_end = slot_dt + timedelta(minutes=actual_duration)
 
             # 2. Double-check against Calendar
             busy = _busy_periods(self.service, self.calendar_id, [slot_dt])
@@ -356,7 +372,7 @@ class GoogleCalendarClient:
 
     def reschedule_appointment(self, event_id: str, new_slot_iso: str) -> str:
         new_start = datetime.fromisoformat(new_slot_iso)
-        new_end   = new_start + timedelta(minutes=SLOT_MINUTES)
+        new_end   = new_start + timedelta(minutes=self.slot_minutes)
 
         # Check availability first
         try:

@@ -1,0 +1,6 @@
+DEFAULT_SLOT_MINUTES: int = 30
+DEFAULT_WORK_START: int = 10
+DEFAULT_WORK_END: int = 18
+DEFAULT_WORK_DAYS: frozenset[int] = frozenset({0, 1, 2, 3, 4})
+SLOT_LOCK_TTL: int = 300
+APPOINTMENT_TTL: int = 60 * 60 * 24 * 30

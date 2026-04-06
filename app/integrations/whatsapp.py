@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppClient:
     def __init__(self) -> None:
-        self.access_token = settings.whatsapp_access_token
+        self.access_token = settings.whatsapp_access_token.get_secret_value()
         self.phone_number_id = settings.whatsapp_phone_number_id
         self.base_url = f"https://graph.facebook.com/v19.0/{self.phone_number_id}/messages"
 

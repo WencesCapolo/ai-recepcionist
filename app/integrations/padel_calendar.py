@@ -15,14 +15,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.integrations.calendar import _get_service
+from app.integrations.argentina import ART
+from app.integrations.calendar_config import SLOT_LOCK_TTL as LOCK_TTL, APPOINTMENT_TTL as BOOKING_TTL
 
 logger = logging.getLogger(__name__)
 
 COURTS: list[str] = ["Cancha 1", "Cancha 2", "Cancha 3"]
 SLOT_MINUTES = 60
-ART = timezone(timedelta(hours=-3))
-LOCK_TTL = 300        # seconds — slot reservation window
-BOOKING_TTL = 30 * 24 * 3600  # 30 days
 
 
 def resolve_cancha(cancha: str) -> str:

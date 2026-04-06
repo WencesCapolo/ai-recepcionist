@@ -21,8 +21,8 @@ class TranscriberClient:
     """Downloads WhatsApp audio and transcribes via OpenAI Whisper."""
 
     def __init__(self) -> None:
-        self.whatsapp_token = settings.whatsapp_access_token
-        self.openai_key = settings.openai_api_key
+        self.whatsapp_token = settings.whatsapp_access_token.get_secret_value()
+        self.openai_key = settings.openai_api_key.get_secret_value()
 
     async def transcribe(self, media_id: str) -> str:
         """

@@ -31,9 +31,7 @@ def _get_gc():
 
 
 
-# Tab names — change here if the dentist names them differently
-TAB_TREATMENTS = "Tratamientos"
-TAB_INSURANCES  = "Obras Sociales"
+
 
 
 # ---------------------------------------------------------------------------
@@ -41,14 +39,14 @@ TAB_INSURANCES  = "Obras Sociales"
 # or add them as methods directly on SheetsClient)
 # ---------------------------------------------------------------------------
 
-def get_treatment_info(sheets_client, sheet_id: str, treatment: str) -> str:
+def get_treatment_info(sheets_client, sheet_id: str, treatment: str, tab_treatments: str = "Tratamientos") -> str:
     """
     Returns JSON string: {"duration_minutes": 30, "price": 5000, "name": "Limpieza dental"}
     Used by GoogleCalendarClient.get_treatment_info() and the get_prices tool.
     """
     try:
         spreadsheet = _get_gc().open_by_key(sheet_id)
-        ws          = spreadsheet.worksheet(TAB_TREATMENTS)
+        ws          = spreadsheet.worksheet(tab_treatments)
         records     = ws.get_all_records()
     except Exception as e:
         logger.error("get_treatment_info sheet error: %s", e)
@@ -85,14 +83,14 @@ def get_treatment_info(sheets_client, sheet_id: str, treatment: str) -> str:
     })
 
 
-def get_all_treatments(sheets_client, sheet_id: str) -> str:
+def get_all_treatments(sheets_client, sheet_id: str, tab_treatments: str = "Tratamientos") -> str:
     """
     Returns a human-readable list of all treatments with duration and price.
     Used by the get_prices tool.
     """
     try:
         spreadsheet = _get_gc().open_by_key(sheet_id)
-        ws          = spreadsheet.worksheet(TAB_TREATMENTS)
+        ws          = spreadsheet.worksheet(tab_treatments)
         records     = ws.get_all_records()
     except Exception as e:
         logger.error("get_all_treatments error: %s", e)
@@ -115,13 +113,13 @@ def get_all_treatments(sheets_client, sheet_id: str) -> str:
     return "Tratamientos y aranceles:\n" + "\n".join(lines)
 
 
-def get_insurances(sheets_client, sheet_id: str) -> str:
+def get_insurances(sheets_client, sheet_id: str, tab_insurances: str = "Obras Sociales") -> str:
     """
     Returns a human-readable list of accepted obras sociales.
     """
     try:
         spreadsheet = _get_gc().open_by_key(sheet_id)
-        ws          = spreadsheet.worksheet(TAB_INSURANCES)
+        ws          = spreadsheet.worksheet(tab_insurances)
         records     = ws.get_all_records()
     except Exception as e:
         logger.error("get_insurances error: %s", e)

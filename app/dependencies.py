@@ -15,11 +15,11 @@ from app.integrations.transcriber import get_transcriber_client
 
 @lru_cache
 def get_supabase() -> Client:
-    return create_client(settings.supabase_url, settings.supabase_service_key)
+    return create_client(settings.supabase_url, settings.supabase_service_key.get_secret_value())
 
 @lru_cache
 def get_redis() -> Redis:
-    return Redis(url=settings.UPSTASH_REDIS_REST_URL, token=settings.UPSTASH_REDIS_REST_TOKEN)
+    return Redis(url=settings.UPSTASH_REDIS_REST_URL, token=settings.UPSTASH_REDIS_REST_TOKEN.get_secret_value())
 
 def get_client_service(
     supabase: Annotated[Client, Depends(get_supabase)],

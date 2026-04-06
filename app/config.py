@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_REST_TOKEN: SecretStr
 
     # LLM
-    anthropic_api_key: SecretStr
+    anthropic_api_key: SecretStr = SecretStr("")
     openai_api_key: SecretStr
 
     # Google

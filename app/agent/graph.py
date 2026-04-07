@@ -41,6 +41,7 @@ class _AgentState(TypedDict):
     final_reply: str              # set by agent node on text response
     _pending_tool_calls: list     # transient — tool call objects from the LLM response
     used_tools: list[str]         # keeps track of tools called
+    client_id: str                # propagated to child spans for traceability
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +70,8 @@ def _make_agent_node(client: AsyncOpenAI):
 
     async def agent_node(state: _AgentState) -> dict:
         iteration = state["iterations"]
-        with logfire.span("agent_iteration", iteration=iteration):
+        client_id = state.get("client_id", "")
+        with logfire.span("agent_iteration", iteration=iteration, client_id=client_id) as span:
             kwargs: dict = {
                 "model": "gpt-4o-mini",
                 "messages": state["messages"],
@@ -80,10 +82,13 @@ def _make_agent_node(client: AsyncOpenAI):
 
             response = await client.chat.completions.create(**kwargs)
             message = response.choices[0].message
+            finish_reason = response.choices[0].finish_reason
+            span.set_attribute("finish_reason", finish_reason)
 
             if message.tool_calls:
                 tool_names = [tc.function.name for tc in message.tool_calls]
                 logfire.info("agent_tool_calls", tools=tool_names, iteration=iteration)
+                span.set_attribute("tool_count", len(tool_names))
                 # Append the assistant message (with tool_calls) to the history.
                 # OpenAI requires this before the tool result messages.
                 state["messages"].append({
@@ -112,9 +117,6 @@ def _make_agent_node(client: AsyncOpenAI):
             # Text response — agent is done.
             reply = (message.content or "").strip()
 
-            stop_reason = response.choices[0].finish_reason
-            logger.info(f"Agent loop iteration {iteration}, stop_reason={stop_reason}, content_types={['text' if message.content else 'None']}")
-
             return {
                 "messages": state["messages"],
                 "iterations": state["iterations"],
@@ -139,17 +141,21 @@ def _make_tools_node():
             except json.JSONDecodeError:
                 args = {}
 
-            with logfire.span("tool_call", tool=name, iteration=state["iterations"]):
+            with logfire.span("tool_call", tool=name, iteration=state["iterations"], client_id=state.get("client_id", "")) as span:
                 handler = state["handler_map"].get(name)
                 if handler is None:
                     result = f"Error: herramienta '{name}' no encontrada."
                     logger.warning("Tool '%s' not found in handler_map", name)
+                    span.set_attribute("success", False)
                 else:
                     try:
                         result = await handler(**args)
+                        span.set_attribute("result_length", len(str(result)))
+                        span.set_attribute("success", True)
                     except Exception as exc:
                         result = f"Error al ejecutar la herramienta: {exc}"
                         logger.exception("Tool '%s' raised an exception", name)
+                        span.set_attribute("success", False)
 
             state["messages"].append({
                 "role": "tool",
@@ -217,7 +223,7 @@ async def run_agent(
     sheets: SheetsClient,
     redis: Optional[Any] = None,
     user_phone: str = "",
-) -> tuple[str, Optional[str]]:
+) -> tuple[str, list[str], int]:
     """Run the agent loop for a single user turn.
 
     Args:
@@ -228,8 +234,7 @@ async def run_agent(
         sheets:       Authenticated Google Sheets client.
 
     Returns:
-        A tuple of (assistant's final text reply, used_tool_name).
-        If multiple tools were used, they are joined by commas.
+        A tuple of (assistant's final text reply, used_tools list, iteration count).
 
     Raises:
         Any unhandled exception from the LLM or tool layer — the caller
@@ -265,6 +270,7 @@ async def run_agent(
         "final_reply": "",
         "_pending_tool_calls": [],
         "used_tools": [],
+        "client_id": str(config.id),
     }
 
     result = await graph.ainvoke(initial_state)
@@ -274,7 +280,7 @@ async def run_agent(
         logger.error("Agent loop ended with empty reply. Final state: %s", result)
         raise RuntimeError("El agente no produjo una respuesta.")
 
-    used_tools: list[str] = result.get("used_tools", [])
-    tool_name = ",".join(set(used_tools)) if used_tools else None
+    used_tools: list[str] = list(dict.fromkeys(result.get("used_tools", [])))
+    iterations: int = result.get("iterations", 0)
 
-    return reply, tool_name
+    return reply, used_tools, iterations

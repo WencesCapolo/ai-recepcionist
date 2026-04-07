@@ -40,10 +40,13 @@ def test_parse_payload_text(text_payload):
 
 @pytest.mark.asyncio
 async def test_resolve_client_found():
-    mock_get_client = AsyncMock(return_value={"id": "client1"})
+    client_cfg = MagicMock()
+    client_cfg.id = "client1"
+    client_cfg.name = "Test Club"
+    mock_get_client = AsyncMock(return_value=client_cfg)
     client = await _resolve_client("123456789", mock_get_client)
     mock_get_client.assert_called_once_with("123456789")
-    assert client == {"id": "client1"}
+    assert client is client_cfg
 
 
 @pytest.mark.asyncio

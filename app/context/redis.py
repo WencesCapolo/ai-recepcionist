@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import logfire
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -58,26 +59,34 @@ class ConversationContext:
         Returns empty history on miss (fresh start after 24h inactivity).
         """
         key = self._history_key(client_id, user_phone)
-        try:
-            raw = self._redis.get(key)
-            if not raw:
+        with logfire.span("redis.history_load", client_id=client_id) as span:
+            try:
+                raw = self._redis.get(key)
+                if not raw:
+                    span.set_attribute("cache_hit", False)
+                    span.set_attribute("message_count", 0)
+                    return ConversationHistory()
+                data = json.loads(raw)
+                history = ConversationHistory(messages=[Message(**m) for m in data])
+                span.set_attribute("cache_hit", True)
+                span.set_attribute("message_count", len(history.messages))
+                return history
+            except Exception as e:
+                logger.error(f"Failed to load history [{client_id}:{user_phone}]: {e}")
                 return ConversationHistory()
-            data = json.loads(raw)
-            return ConversationHistory(messages=[Message(**m) for m in data])
-        except Exception as e:
-            logger.error(f"Failed to load history [{client_id}:{user_phone}]: {e}")
-            return ConversationHistory()
 
     def save_history(
         self, client_id: str, user_phone: str, history: ConversationHistory
     ) -> None:
         """Save conversation history to Redis, resetting the 24h TTL."""
         key = self._history_key(client_id, user_phone)
-        try:
-            payload = json.dumps([m.model_dump() for m in history.messages])
-            self._redis.set(key, payload, ex=HISTORY_TTL)
-        except Exception as e:
-            logger.error(f"Failed to save history [{client_id}:{user_phone}]: {e}")
+        with logfire.span("redis.history_save", client_id=client_id) as span:
+            try:
+                payload = json.dumps([m.model_dump() for m in history.messages])
+                self._redis.set(key, payload, ex=HISTORY_TTL)
+                span.set_attribute("message_count", len(history.messages))
+            except Exception as e:
+                logger.error(f"Failed to save history [{client_id}:{user_phone}]: {e}")
 
     @staticmethod
     def append_message(
@@ -164,15 +173,20 @@ class ConversationContext:
         """
         lock_key = self._lock_key(client_id, user_phone)
         acquired = False
+        attempts = 0
 
         # Retry every 500ms for up to 12 seconds (covers a full agent turn)
         max_attempts = 24
-        for attempt in range(max_attempts):
-            acquired = self._redis.set(lock_key, "1", nx=True, ex=LOCK_TTL)
-            if acquired:
-                break
-            if attempt < max_attempts - 1:
-                await asyncio.sleep(0.5)
+        with logfire.span("redis.lock_acquire", client_id=client_id) as span:
+            for attempt in range(max_attempts):
+                attempts = attempt + 1
+                acquired = self._redis.set(lock_key, "1", nx=True, ex=LOCK_TTL)
+                if acquired:
+                    break
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.5)
+            span.set_attribute("wait_attempts", attempts)
+            span.set_attribute("acquired", bool(acquired))
 
         if not acquired:
             raise RuntimeError(

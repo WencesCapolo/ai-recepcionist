@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     # Observability
     logfire_token: str = ""
+    service_version: str = "unknown"
+    git_commit: str = "unknown"
+    railway_region: str = "unknown"
 
     # App
     sentry_dsn: str = ""

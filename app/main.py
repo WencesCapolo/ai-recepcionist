@@ -13,7 +13,11 @@ def create_app() -> FastAPI:
     logging.basicConfig(level=settings.log_level)
 
     if settings.logfire_token:
-        logfire.configure(token=settings.logfire_token)
+        logfire.configure(
+            token=settings.logfire_token,
+            service_name="ai-recepcionist",
+            service_version=settings.service_version,
+        )
         logfire.instrument_openai()
         logfire.instrument_httpx()
 

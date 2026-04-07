@@ -129,7 +129,8 @@ class TestHealth:
 
 class TestWebhookVerification:
     def test_correct_token_returns_challenge(self, client):
-        with patch.object(settings, "whatsapp_verify_token", "test_token_123"):
+        from pydantic import SecretStr
+        with patch.object(settings, "whatsapp_verify_token", SecretStr("test_token_123")):
             response = client.get(
                 "/webhook",
                 params={
@@ -142,7 +143,8 @@ class TestWebhookVerification:
         assert response.text == "ch_123456789"
 
     def test_wrong_token_returns_403(self, client):
-        with patch.object(settings, "whatsapp_verify_token", "test_token_123"):
+        from pydantic import SecretStr
+        with patch.object(settings, "whatsapp_verify_token", SecretStr("test_token_123")):
             response = client.get(
                 "/webhook",
                 params={
@@ -198,7 +200,7 @@ class TestWebhookPost:
             prompt_version=1,
             active=True,
         )
-        mocks["client_service"].get_by_phone = AsyncMock(return_value=fake_config)
+        mocks["client_service"].get_client_by_phone = AsyncMock(return_value=fake_config)
 
         with patch("app.webhook.handler.run_agent", side_effect=Exception("LLM exploded")):
             response = client.post("/webhook", json=_make_payload())
@@ -228,7 +230,7 @@ class TestWebhookPost:
             prompt_version=1,
             active=True,
         )
-        mocks["client_service"].get_by_phone = AsyncMock(return_value=fake_config)
+        mocks["client_service"].get_client_by_phone = AsyncMock(return_value=fake_config)
 
         with patch("app.webhook.handler.run_agent", side_effect=Exception("LLM exploded")):
             client.post("/webhook", json=_make_payload(message_id="crash-test-msg"))
@@ -277,12 +279,12 @@ class TestWebhookPost:
         context_mock.save_history.return_value = None
 
         mocks = _override_dependencies(app, context_mock=context_mock, whatsapp_mock=whatsapp_mock)
-        mocks["client_service"].get_by_phone = AsyncMock(return_value=fake_config)
+        mocks["client_service"].get_client_by_phone = AsyncMock(return_value=fake_config)
 
         payload = _make_payload(message_id="dup-msg-999")
 
         with patch("app.webhook.handler.run_agent", new_callable=AsyncMock) as mock_agent:
-            mock_agent.return_value = "Hola!"
+            mock_agent.return_value = ("Hola!", [], 1)
             client.post("/webhook", json=payload)  # first — should process
             client.post("/webhook", json=payload)  # second — should be dropped
 

@@ -196,7 +196,6 @@ class TestWebhookPost:
             whatsapp_number="+5493511234567",
             system_prompt="Sos el asistente de Ferretería Stainless.\nHorario: lunes a viernes 8-18.",
             tools_enabled=[],
-            sheet_id=None,
             prompt_version=1,
             active=True,
         )
@@ -226,7 +225,6 @@ class TestWebhookPost:
             whatsapp_number="+5493511234567",
             system_prompt="Sos el asistente de Ferretería Stainless.\nHorario: lunes a viernes 8-18.",
             tools_enabled=[],
-            sheet_id=None,
             prompt_version=1,
             active=True,
         )
@@ -263,7 +261,6 @@ class TestWebhookPost:
             whatsapp_number="+5493511234567",
             system_prompt="Test.\nHorario: lunes a viernes 8-18.",
             tools_enabled=[],
-            sheet_id=None,
             prompt_version=1,
             active=True,
         )

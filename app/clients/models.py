@@ -1,10 +1,57 @@
 # app/clients/models.py
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
 
 from app.agent.registry import KNOWN_TOOL_NAMES
+
+
+class RetailToolConfig(BaseModel):
+    sheet_id: str
+    tab: str = "productos"
+    columns: dict[str, str] = Field(
+        default_factory=lambda: {
+            "product": "producto",
+            "category": "categoria",
+            "price": "precio",
+            "stock": "stock",
+            "unit": "unidad",
+        }
+    )
+
+
+class CalendarToolConfig(BaseModel):
+    calendar_id: Optional[str] = None  # None → use CalendarMock
+    slot_minutes: int = 30
+    work_start: int = 10
+    work_end: int = 18
+    work_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
+    timezone: str = "America/Argentina/Cordoba"
+
+
+class DentistSheetsConfig(BaseModel):
+    sheet_id: str
+    tab_treatments: str = "Tratamientos"
+    tab_insurances: str = "Obras Sociales"
+
+
+class PadelConfig(BaseModel):
+    calendar_id: str
+    slot_minutes: int = 60
+
+
+class PaymentConfig(BaseModel):
+    access_token: str
+    sandbox: bool = True
+
+
+class ToolConfig(BaseModel):
+    retail: Optional[RetailToolConfig] = None
+    calendar: Optional[CalendarToolConfig] = None
+    dentist_sheets: Optional[DentistSheetsConfig] = None
+    padel: Optional[PadelConfig] = None
+    payment: Optional[PaymentConfig] = None
+
 
 class ClientConfig(BaseModel):
     id: UUID
@@ -12,6 +59,9 @@ class ClientConfig(BaseModel):
     whatsapp_number: str
     system_prompt: str
     tools_enabled: list[str] = Field(default_factory=list)
+    prompt_version: int
+    active: bool
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)
 
     @field_validator("tools_enabled")
     @classmethod
@@ -20,19 +70,3 @@ class ClientConfig(BaseModel):
         if unknown:
             raise ValueError(f"Unknown tool names: {unknown}")
         return v
-    sheet_id: Optional[str] # Google Sheet ID for products/stock (panadería, ferretería, etc)
-    prompt_version: int
-    active: bool
-    mp_access_token: Optional[str] = None
-    mp_sandbox: bool = True
-    # Google Calendar — set to the calendar ID (e.g. "foo@gmail.com")
-    # in the Supabase clients table to enable real Calendar integration.
-    calendar_id: Optional[str] = None
-    prices_sheet_id: Optional[str] = None  # Google Sheet ID for dentist treatments/insurances
-    slot_minutes: int = 30
-    work_start_hour: int = 10
-    work_end_hour: int = 18
-    work_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
-    sheet_tab_treatments: str = "Tratamientos"
-    sheet_tab_insurances: str = "Obras Sociales"
-    sheet_tab_products: str = "productos"

@@ -19,7 +19,7 @@ from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
 
 from app.agent.prompts import build_system_prompt
-from app.agent.tools import build_tools
+from app.agent.tools import build_tools_for_client, run_tool
 from app.clients.models import ClientConfig
 from app.config import settings
 from app.conversations.models import ConversationHistory
@@ -142,20 +142,14 @@ def _make_tools_node():
                 args = {}
 
             with logfire.span("tool_call", tool=name, iteration=state["iterations"], client_id=state.get("client_id", "")) as span:
-                handler = state["handler_map"].get(name)
-                if handler is None:
-                    result = f"Error: herramienta '{name}' no encontrada."
-                    logger.warning("Tool '%s' not found in handler_map", name)
+                try:
+                    result = await run_tool(name, args, state["handler_map"])
+                    span.set_attribute("result_length", len(str(result)))
+                    span.set_attribute("success", True)
+                except Exception as exc:
+                    result = f"Error al ejecutar la herramienta: {exc}"
+                    logger.exception("Tool '%s' raised an exception", name)
                     span.set_attribute("success", False)
-                else:
-                    try:
-                        result = await handler(**args)
-                        span.set_attribute("result_length", len(str(result)))
-                        span.set_attribute("success", True)
-                    except Exception as exc:
-                        result = f"Error al ejecutar la herramienta: {exc}"
-                        logger.exception("Tool '%s' raised an exception", name)
-                        span.set_attribute("success", False)
 
             state["messages"].append({
                 "role": "tool",
@@ -241,7 +235,7 @@ async def run_agent(
         (handler.py) is responsible for user-facing error messages.
     """
     # Build tool definitions and handler map for this client.
-    raw_tools = build_tools(config, sheets, redis, user_phone, client_id=str(config.id))
+    raw_tools = build_tools_for_client(config, sheets, redis, user_phone, client_id=str(config.id))
     tool_defs = [_to_openai_tool(t["definition"]) for t in raw_tools]
     handler_map: dict = {t["definition"]["name"]: t["handler"] for t in raw_tools}
 

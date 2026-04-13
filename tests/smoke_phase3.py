@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.integrations.sheets import SheetsClient
-from app.agent.tools import build_tools
-from app.clients.models import ClientConfig
+from app.agent.tools import build_tools_for_client
+from app.clients.models import ClientConfig, ToolConfig, RetailToolConfig
 import uuid
 
 # Replace with your real sheet ID
@@ -23,9 +23,11 @@ def make_test_config() -> ClientConfig:
         system_prompt="""Sos el asistente de Ferretería Stainless.
 Horario: lunes a viernes 8:00–18:00, sábados 8:00–13:00, domingos cerrado.""",
         tools_enabled=["get_price", "get_stock", "get_all_products", "get_hours"],
-        sheet_id=SHEET_ID,
         prompt_version=1,
         active=True,
+        tool_config=ToolConfig(
+            retail=RetailToolConfig(sheet_id=SHEET_ID),
+        ),
     )
 
 
@@ -50,7 +52,7 @@ def test_tools():
     print("\n--- tools.py ---")
     config = make_test_config()
     sheets = SheetsClient()
-    tools = build_tools(config, sheets)
+    tools = build_tools_for_client(config, sheets)
 
     assert len(tools) == 4, f"❌ Expected 4 tools, got {len(tools)}"
     tool_names = [t["definition"]["name"] for t in tools]

@@ -1,42 +1,40 @@
 from typing import Any
+
 from app.clients.models import ClientConfig
-from app.agent.registry import CALENDAR_TOOLS
 
-class CalendarBookingToolset:
-    name = "calendar_booking"
-    required_tools = frozenset(t.value for t in CALENDAR_TOOLS)
 
-    def is_applicable(self, config: ClientConfig) -> bool:
-        enabled = frozenset(config.tools_enabled)
-        return bool(enabled & self.required_tools)
+def build_calendar_tools(
+    config: ClientConfig,
+    *,
+    redis: Any = None,
+    client_id: str = "",
+    **_: Any,
+) -> list[dict]:
+    cfg = config.tool_config.calendar
+    if cfg is None or redis is None:
+        return []
 
-    def build(self, config: ClientConfig, **deps: Any) -> list[dict]:
-        redis = deps.get("redis")
-        client_id = deps.get("client_id", "")
-        if redis is None:
-            return []
+    if cfg.calendar_id:
+        from app.integrations.calendar import GoogleCalendarClient
+        calendar = GoogleCalendarClient(
+            calendar_id=cfg.calendar_id,
+            redis=redis,
+            client_id=client_id or str(config.id),
+            slot_minutes=cfg.slot_minutes,
+            work_start=cfg.work_start,
+            work_end=cfg.work_end,
+            work_days=cfg.work_days,
+        )
+    else:
+        from app.integrations.calendar_mock import CalendarMock
+        calendar = CalendarMock(
+            redis=redis,
+            client_id=client_id or str(config.id),
+            slot_minutes=cfg.slot_minutes,
+            work_start=cfg.work_start,
+            work_end=cfg.work_end,
+            work_days=cfg.work_days,
+        )
 
-        from app.agent.calendar_tools import build_calendar_tools
-        if config.calendar_id:
-            from app.integrations.calendar import GoogleCalendarClient
-            _calendar = GoogleCalendarClient(
-                calendar_id=config.calendar_id,
-                redis=redis,
-                client_id=client_id or str(config.id),
-                slot_minutes=config.slot_minutes,
-                work_start=config.work_start_hour,
-                work_end=config.work_end_hour,
-                work_days=config.work_days,
-            )
-        else:
-            from app.integrations.calendar_mock import CalendarMock
-            _calendar = CalendarMock(
-                redis=redis,
-                client_id=client_id or str(config.id),
-                slot_minutes=config.slot_minutes,
-                work_start=config.work_start_hour,
-                work_end=config.work_end_hour,
-                work_days=config.work_days,
-            )
-
-        return build_calendar_tools(_calendar)
+    from app.agent.calendar_tools import build_calendar_tools as _build
+    return _build(calendar)

@@ -1,33 +1,27 @@
 """
 app/agent/calendar_tools.py
 
-Calendar tools in native Anthropic function-calling format.
-Mirrors the dict pattern used in tools.py: each tool is
-{"definition": {...}, "handler": callable}.
+Calendar tool factories (check_availability, book_appointment, etc.).
+Used by verticals/calendar_booking.py.
 
-build_calendar_tools(calendar) is called from tools.py when
-calendar tool names appear in config.tools_enabled.
+get_current_date_hour lives in shared_tools.py — not here.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from app.integrations.calendar import GoogleCalendarClient
-    from app.integrations.calendar_mock import CalendarMock
+import logfire
 
 logger = logging.getLogger(__name__)
 
 
 def build_calendar_tools(calendar) -> list[dict]:
     """
-    Returns a list of tool dicts (definition + handler) for the given
-    calendar backend (GoogleCalendarClient or CalendarMock).
+    Returns tool dicts (definition + handler) for the given calendar backend
+    (GoogleCalendarClient or CalendarMock).
     """
     return [
-        _make_get_current_date_hour(calendar),
         _make_check_availability(calendar),
         _make_book_appointment(calendar),
         _make_get_appointment(calendar),
@@ -36,44 +30,15 @@ def build_calendar_tools(calendar) -> list[dict]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# get_current_date_hour
-# ---------------------------------------------------------------------------
-
-def _make_get_current_date_hour(calendar) -> dict:
-    async def handler() -> str:
-        return calendar.get_current_date_hour()
-
-    return {
-        "definition": {
-            "name": "get_current_date_hour",
-            "description": (
-                "Devuelve la fecha y hora actual en Argentina (ART, UTC-3). "
-                "Llamar SIEMPRE antes de responder preguntas sobre qué día es hoy, "
-                "qué hora es, o para calcular fechas relativas como 'mañana' o 'la semana que viene'."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-        "handler": handler,
-    }
-
-
-# ---------------------------------------------------------------------------
-# check_availability
-# ---------------------------------------------------------------------------
-
 def _make_check_availability(calendar) -> dict:
     async def handler(count: int = 3, duration_minutes: int = 30, after_hour: int = 0, before_hour: int = 24) -> str:
-        return calendar.check_availability(
-            count=min(count, 5),
-            duration_minutes=duration_minutes,
-            after_hour=after_hour,
-            before_hour=before_hour,
-        )
+        with logfire.span("tool.check_availability"):
+            return calendar.check_availability(
+                count=min(count, 5),
+                duration_minutes=duration_minutes,
+                after_hour=after_hour,
+                before_hour=before_hour,
+            )
 
     return {
         "definition": {
@@ -116,10 +81,6 @@ def _make_check_availability(calendar) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# book_appointment
-# ---------------------------------------------------------------------------
-
 def _make_book_appointment(calendar) -> dict:
     async def handler(
         patient_name: str,
@@ -130,15 +91,16 @@ def _make_book_appointment(calendar) -> dict:
         is_new_patient: bool = True,
         duration_minutes: int = 30,
     ) -> str:
-        return calendar.book_appointment(
-            patient_name=patient_name,
-            patient_phone=patient_phone,
-            patient_email=patient_email,
-            reason=reason,
-            slot_iso=slot_iso,
-            is_new_patient=is_new_patient,
-            duration_minutes=duration_minutes,
-        )
+        with logfire.span("tool.book_appointment"):
+            return calendar.book_appointment(
+                patient_name=patient_name,
+                patient_phone=patient_phone,
+                patient_email=patient_email,
+                reason=reason,
+                slot_iso=slot_iso,
+                is_new_patient=is_new_patient,
+                duration_minutes=duration_minutes,
+            )
 
     return {
         "definition": {
@@ -151,63 +113,31 @@ def _make_book_appointment(calendar) -> dict:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "patient_name": {
+                    "patient_name":    {"type": "string", "description": "Nombre completo del paciente"},
+                    "patient_phone":   {"type": "string", "description": "Número de WhatsApp del paciente (formato internacional)"},
+                    "patient_email":   {"type": "string", "description": "Email del paciente para enviar confirmación y recordatorio"},
+                    "reason":          {"type": "string", "description": "Motivo de la consulta (ej: limpieza, extracción, control)"},
+                    "slot_iso":        {
                         "type": "string",
-                        "description": "Nombre completo del paciente",
+                        "description": "Slot elegido en formato ISO 8601 con timezone, tal como lo devolvió check_availability",
                     },
-                    "patient_phone": {
-                        "type": "string",
-                        "description": "Número de WhatsApp del paciente (formato internacional)",
-                    },
-                    "patient_email": {
-                        "type": "string",
-                        "description": "Email del paciente para enviar confirmación y recordatorio",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "Motivo de la consulta (ej: limpieza, extracción, control)",
-                    },
-                    "slot_iso": {
-                        "type": "string",
-                        "description": (
-                            "Slot elegido en formato ISO 8601 con timezone, "
-                            "tal como lo devolvió check_availability"
-                        ),
-                    },
-                    "is_new_patient": {
-                        "type": "boolean",
-                        "description": "True si es la primera vez que viene al consultorio",
-                        "default": True,
-                    },
-                    "duration_minutes": {
-                        "type": "integer",
-                        "description": "Duración del turno en minutos (obtenido de get_treatment_info). Default 30.",
-                        "default": 30,
-                    },
+                    "is_new_patient":  {"type": "boolean", "description": "True si es la primera vez que viene al consultorio", "default": True},
+                    "duration_minutes": {"type": "integer", "description": "Duración del turno en minutos (obtenido de get_treatment_info). Default 30.", "default": 30},
                 },
-                "required": [
-                    "patient_name",
-                    "patient_phone",
-                    "patient_email",
-                    "reason",
-                    "slot_iso",
-                ],
+                "required": ["patient_name", "patient_phone", "patient_email", "reason", "slot_iso"],
             },
         },
         "handler": handler,
     }
 
 
-# ---------------------------------------------------------------------------
-# get_appointment
-# ---------------------------------------------------------------------------
-
 def _make_get_appointment(calendar) -> dict:
     async def handler(patient_name: str, date_hint: str = "") -> str:
-        return calendar.get_appointment(
-            patient_name=patient_name,
-            date_hint=date_hint or None,
-        )
+        with logfire.span("tool.get_appointment"):
+            return calendar.get_appointment(
+                patient_name=patient_name,
+                date_hint=date_hint or None,
+            )
 
     return {
         "definition": {
@@ -220,14 +150,8 @@ def _make_get_appointment(calendar) -> dict:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "patient_name": {
-                        "type": "string",
-                        "description": "Nombre completo del paciente",
-                    },
-                    "date_hint": {
-                        "type": "string",
-                        "description": "Fecha aproximada del turno (ej: '20 de marzo', '2026-03-20'). Opcional.",
-                    },
+                    "patient_name": {"type": "string", "description": "Nombre completo del paciente"},
+                    "date_hint":    {"type": "string", "description": "Fecha aproximada del turno (ej: '20 de marzo', '2026-03-20'). Opcional."},
                 },
                 "required": ["patient_name"],
             },
@@ -236,16 +160,13 @@ def _make_get_appointment(calendar) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# cancel_appointment
-# ---------------------------------------------------------------------------
-
 def _make_cancel_appointment(calendar) -> dict:
     async def handler(event_id: str, patient_name: str) -> str:
-        return calendar.cancel_appointment(
-            event_id=event_id,
-            patient_name=patient_name,
-        )
+        with logfire.span("tool.cancel_appointment"):
+            return calendar.cancel_appointment(
+                event_id=event_id,
+                patient_name=patient_name,
+            )
 
     return {
         "definition": {
@@ -257,14 +178,8 @@ def _make_cancel_appointment(calendar) -> dict:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "event_id": {
-                        "type": "string",
-                        "description": "ID del evento, obtenido de get_appointment",
-                    },
-                    "patient_name": {
-                        "type": "string",
-                        "description": "Nombre del paciente para verificar antes de cancelar",
-                    },
+                    "event_id":     {"type": "string", "description": "ID del evento, obtenido de get_appointment"},
+                    "patient_name": {"type": "string", "description": "Nombre del paciente para verificar antes de cancelar"},
                 },
                 "required": ["event_id", "patient_name"],
             },
@@ -273,16 +188,13 @@ def _make_cancel_appointment(calendar) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# reschedule_appointment
-# ---------------------------------------------------------------------------
-
 def _make_reschedule_appointment(calendar) -> dict:
     async def handler(event_id: str, new_slot_iso: str) -> str:
-        return calendar.reschedule_appointment(
-            event_id=event_id,
-            new_slot_iso=new_slot_iso,
-        )
+        with logfire.span("tool.reschedule_appointment"):
+            return calendar.reschedule_appointment(
+                event_id=event_id,
+                new_slot_iso=new_slot_iso,
+            )
 
     return {
         "definition": {
@@ -295,14 +207,8 @@ def _make_reschedule_appointment(calendar) -> dict:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "event_id": {
-                        "type": "string",
-                        "description": "ID del evento a reprogramar, obtenido de get_appointment",
-                    },
-                    "new_slot_iso": {
-                        "type": "string",
-                        "description": "Nuevo slot en formato ISO 8601, obtenido de check_availability",
-                    },
+                    "event_id":     {"type": "string", "description": "ID del evento a reprogramar, obtenido de get_appointment"},
+                    "new_slot_iso": {"type": "string", "description": "Nuevo slot en formato ISO 8601, obtenido de check_availability"},
                 },
                 "required": ["event_id", "new_slot_iso"],
             },

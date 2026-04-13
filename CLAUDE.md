@@ -39,9 +39,9 @@ pip install -e ".[dev]"
 9. Send reply via Meta Cloud API
 10. Save history to Redis + background-persist to Supabase
 
-**Multi-tenancy:** Client identified by inbound WhatsApp business number. Per-client config in Supabase `clients` table includes `system_prompt`, `tools_enabled`, `sheet_id`, `mp_access_token`.
+**Multi-tenancy:** Client identified by inbound WhatsApp business number. Per-client config in Supabase `clients` table includes `system_prompt`, `tools_enabled`, and a `tool_config` JSONB column (or legacy flat columns mapped by `_build_config` in `clients/service.py`).
 
-**Agent tools** are built dynamically per-client from the `tools_enabled` array. Available tools: Google Sheets product queries (price, stock, categories), Mercado Pago payment link generation, calendar availability / booking, current date/time.
+**Agent tools** are built dynamically per-client from `tools_enabled` + `tool_config`. One function per behavior — never per client. Structural variation (sheet IDs, column names, calendar IDs) lives in `ClientConfig.tool_config` sub-models, not in code. See `docs/tool-design.md` for the full pattern.
 
 **Payment flow:** `generate_payment_link` tool creates checkout URL → user pays → Mercado Pago POSTs to `/webhook/mp` → handler confirms payment, sends notification to user.
 
@@ -49,10 +49,11 @@ pip install -e ".[dev]"
 
 - **FastAPI** — async webhooks (`app/webhook/`)
 - **LangGraph** — agent loop only, NOT LangChain (`app/agent/graph.py`)
-- **OpenAI GPT-4o-mini** — primary LLM (AGENTS.md mentions Claude Haiku but code uses GPT-4o-mini)
+- **OpenAI GPT-4o-mini** — primary LLM
 - **Upstash Redis** — conversation history, locking, dedup, debounce
 - **Supabase Postgres** — client configs, conversation logs
-- **Google Sheets** via gspread — per-client product catalog
+- **Google Sheets** via gspread — per-client product/service catalog
+- **Logfire** — observability (wide events, per-tool spans)
 - **Railway** — deployment
 
 ## Critical conventions
@@ -66,6 +67,18 @@ pip install -e ".[dev]"
 - No SQLAlchemy or ORM — use supabase-py for all data access.
 - No abstract base classes until multiple implementations exist.
 - Split `service.py` into `service.py` + `repository.py` only when the file grows past ~100 lines.
+
+## Tool layer conventions
+
+- **One tool function per behavior, never per client.** Structural variation lives in `ClientConfig.tool_config`, not in code.
+- **`ClientConfig.tool_config`** is a `ToolConfig` Pydantic model. Its sub-model presence gates the tool: `tool_config.retail` enables retail tools, `tool_config.calendar` enables calendar tools, etc.
+- **`build_tools_for_client(config, sheets, redis, user_phone)`** in `app/agent/tools.py` is the only place that assembles the tool list. `graph.py` calls this — nothing else does.
+- **`run_tool(tool_name, tool_input, handler_map)`** in `app/agent/tools.py` is the only dispatcher. `graph.py` calls this — nothing else does.
+- **`graph.py` never imports individual tool functions.** Only `build_tools_for_client` and `run_tool`.
+- **Shared tools** (`get_current_date_hour`, `get_hours`) live in `app/agent/shared_tools.py`. They have no `tool_config` gate.
+- Every tool handler wraps its work in `logfire.span("tool.<name>", client_id=...)`.
+- A tool with no config entry returns a Spanish string — it never raises.
+- See `docs/tool-design.md` for the full pattern, config shapes, and the "adding a new tool" procedure.
 
 ## Redis key patterns
 

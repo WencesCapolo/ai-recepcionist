@@ -20,7 +20,7 @@ from typing import Any
 from app.clients.models import ClientConfig
 from app.integrations.sheets import SheetsClient
 from app.agent.shared_tools import make_get_current_date_hour, make_get_hours
-from app.agent.verticals.retail import build_retail_tools
+from app.agent.verticals.retail import build_retail_tools, build_reseller_tools
 from app.agent.verticals.calendar_booking import build_calendar_tools
 from app.agent.verticals.dentist import build_dentist_tools
 from app.agent.verticals.padel import build_padel_tools
@@ -64,6 +64,9 @@ def build_tools_for_client(
         all_tools[tool["definition"]["name"]] = tool
 
     for tool in build_padel_tools(config, redis=redis, user_phone=user_phone, client_id=_cid):
+        all_tools[tool["definition"]["name"]] = tool
+
+    for tool in build_reseller_tools(config, sheets=sheets):
         all_tools[tool["definition"]["name"]] = tool
 
     return [all_tools[name] for name in config.tools_enabled if name in all_tools]

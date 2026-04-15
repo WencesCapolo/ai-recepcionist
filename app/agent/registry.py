@@ -22,4 +22,6 @@ KNOWN_TOOL_NAMES: frozenset[str] = frozenset({
     "create_booking",
     "cancel_booking",
     "generate_padel_payment_link",
+    # Reseller
+    "get_reseller",
 })

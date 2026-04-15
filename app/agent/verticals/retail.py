@@ -5,7 +5,7 @@ from typing import Any
 import logfire
 from rapidfuzz import process, fuzz
 
-from app.clients.models import ClientConfig, RetailToolConfig, PaymentConfig
+from app.clients.models import ClientConfig, RetailToolConfig, PaymentConfig, ResellerConfig
 from app.integrations.sheets import SheetsClient
 from app.integrations.mercadopago import MercadoPagoClient, MercadoPagoError
 
@@ -281,3 +281,73 @@ def _make_generate_payment_link(
         },
         "handler": handler,
     }
+
+
+def _make_get_reseller(cfg: ResellerConfig, sheets: SheetsClient, config: ClientConfig) -> dict:
+    async def handler(localidad: str) -> str:
+        with logfire.span("tool.get_reseller", client_id=str(config.id)):
+            try:
+                col = cfg.columns
+                rows = sheets.get_all_rows(cfg.sheet_id, worksheet=cfg.tab)
+                if not rows:
+                    return "No tenemos revendedores registrados por el momento."
+
+                names = [str(r.get(col["localidad"], "")) for r in rows]
+                results = process.extract(
+                    localidad, names, scorer=fuzz.partial_ratio, score_cutoff=65, limit=5
+                )
+                if not results:
+                    return (
+                        f"Por ahora no tenemos un punto de venta cerca de {localidad}, "
+                        "pero podemos enviarte el pedido. Querés que te pase info de envío?"
+                    )
+
+                matched = [rows[names.index(m[0])] for m in results]
+                lines = []
+                for r in matched:
+                    nombre = r.get(col["nombre"], "")
+                    contacto = r.get(col["contacto"], "")
+                    direccion = r.get(col["direccion"], "")
+                    loc = r.get(col["localidad"], "")
+                    line = f"En {loc} tenés a {nombre}"
+                    if contacto:
+                        line += f", contacto: {contacto}"
+                    if direccion:
+                        line += f" ({direccion})"
+                    lines.append(line)
+                return "\n".join(lines)
+            except Exception as e:
+                logfire.error("tool.get_reseller.error", client_id=str(config.id), error=str(e))
+                return "No pude consultar los revendedores. Llamá al local para que te orienten."
+
+    return {
+        "definition": {
+            "name": "get_reseller",
+            "description": "Busca revendedores de la marca en una localidad o ciudad.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "localidad": {
+                        "type": "string",
+                        "description": "Ciudad o localidad donde buscar el revendedor",
+                    }
+                },
+                "required": ["localidad"],
+            },
+        },
+        "handler": handler,
+    }
+
+
+def build_reseller_tools(
+    config: ClientConfig,
+    *,
+    sheets: SheetsClient,
+    **_: Any,
+) -> list[dict]:
+    cfg = config.tool_config.reseller
+    if cfg is None:
+        return []
+    if "get_reseller" not in frozenset(config.tools_enabled):
+        return []
+    return [_make_get_reseller(cfg, sheets, config)]

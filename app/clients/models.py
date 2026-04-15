@@ -45,12 +45,27 @@ class PaymentConfig(BaseModel):
     sandbox: bool = True
 
 
+class ResellerConfig(BaseModel):
+    sheet_id: str
+    tab: str = "revendedores"
+    columns: dict[str, str] = Field(
+        default_factory=lambda: {
+            "localidad": "localidad",
+            "provincia": "provincia",
+            "nombre": "nombre_local",
+            "contacto": "contacto",
+            "direccion": "direccion",
+        }
+    )
+
+
 class ToolConfig(BaseModel):
     retail: Optional[RetailToolConfig] = None
     calendar: Optional[CalendarToolConfig] = None
     dentist_sheets: Optional[DentistSheetsConfig] = None
     padel: Optional[PadelConfig] = None
     payment: Optional[PaymentConfig] = None
+    reseller: Optional[ResellerConfig] = None
 
 
 class ClientConfig(BaseModel):

@@ -56,6 +56,7 @@ class ToolConfig(BaseModel):
 | `DentistSheetsConfig` | `get_treatment_info`, `get_prices`, `get_insurances` | `sheet_id`, `tab_treatments`, `tab_insurances` |
 | `PadelConfig` | `get_availability`, `create_booking`, `cancel_booking`, `generate_padel_payment_link` | `calendar_id`, `slot_minutes` |
 | `PaymentConfig` | `generate_payment_link`, `generate_padel_payment_link` | `access_token`, `sandbox` |
+| `ResellerConfig` | `get_reseller` | `sheet_id`, `tab`, `columns` |
 
 `get_hours` and `get_current_date_hour` have **no gate** — they are built unconditionally from the system prompt / current time.
 
@@ -212,6 +213,26 @@ When the Supabase `tool_config` JSONB column is populated for a client, `_build_
 ```
 
 `tools_enabled`: `["get_current_date_hour", "get_availability", "create_booking", "cancel_booking", "get_price", "get_hours", "generate_padel_payment_link"]`
+
+---
+
+### Quimexur Pinturas
+
+```json
+{
+  "retail": {
+    "sheet_id": "<productos_sheet_id>",
+    "tab": "productos"
+  },
+  "reseller": {
+    "sheet_id": "<sheet_id>",
+    "tab": "revendedores"
+  },
+  "payment": { "access_token": "APP_USR-...", "sandbox": true }
+}
+```
+
+`tools_enabled`: `["get_price","get_stock","get_all_products","get_hours","get_products_by_category","generate_payment_link","get_reseller"]`
 
 ---
 

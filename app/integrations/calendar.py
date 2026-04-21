@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Optional
 
+from datetime import datetime, timedelta
+
 from app.integrations.argentina import ART, fmt_datetime as _fmt
 from app.integrations.calendar_config import (
     DEFAULT_SLOT_MINUTES as SLOT_MINUTES,

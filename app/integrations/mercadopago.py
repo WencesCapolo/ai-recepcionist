@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -51,25 +52,41 @@ class MercadoPagoClient:
         ]
         payload = {"items": mp_items}
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{MP_API_BASE}/checkout/preferences",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self._access_token}",
-                        "Content-Type": "application/json",
-                    },
-                    timeout=10.0,
-                )
-        except httpx.TimeoutException:
-            logger.error("MercadoPago request timed out")
-            raise MercadoPagoError("Timeout al conectar con MercadoPago")
-        except httpx.RequestError as e:
-            logger.error("MercadoPago network error: %s", e)
-            raise MercadoPagoError(f"Error de red al conectar con MercadoPago: {e}")
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(2 ** attempt)
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{MP_API_BASE}/checkout/preferences",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {self._access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=10.0,
+                    )
+            except httpx.TimeoutException as e:
+                logger.warning("MercadoPago request timed out (attempt %d/3)", attempt + 1)
+                last_exc = MercadoPagoError("Timeout al conectar con MercadoPago")
+                continue
+            except httpx.RequestError as e:
+                logger.warning("MercadoPago network error (attempt %d/3): %s", attempt + 1, e)
+                last_exc = MercadoPagoError(f"Error de red al conectar con MercadoPago: {e}")
+                continue
 
-        if response.status_code != 201:
+            if response.status_code == 201:
+                break
+            if response.status_code >= 500:
+                logger.warning(
+                    "MercadoPago 5xx (attempt %d/3) [status=%d]", attempt + 1, response.status_code
+                )
+                last_exc = MercadoPagoError(
+                    f"No se pudo generar el link de pago (status {response.status_code})"
+                )
+                continue
+            # 4xx — not retryable
             logger.error(
                 "MercadoPago API error [status=%d body=%s]",
                 response.status_code,
@@ -78,6 +95,9 @@ class MercadoPagoClient:
             raise MercadoPagoError(
                 f"No se pudo generar el link de pago (status {response.status_code})"
             )
+        else:
+            logger.error("MercadoPago create_payment_link failed after 3 attempts")
+            raise last_exc  # type: ignore[misc]
 
         data = response.json()
         key = "sandbox_init_point" if self._sandbox else "init_point"

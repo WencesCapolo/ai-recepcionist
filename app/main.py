@@ -1,4 +1,5 @@
 import logging
+import sys
 import logfire
 from fastapi import FastAPI
 from app.config import settings
@@ -9,14 +10,15 @@ def create_app() -> FastAPI:
     if settings.sentry_dsn:
         import sentry_sdk  # type: ignore[import-untyped,import-not-found]
         sentry_sdk.init(dsn=settings.sentry_dsn)
-        
-    logging.basicConfig(level=settings.log_level)
+
+    logging.basicConfig(level=settings.log_level, stream=sys.stdout)
 
     if settings.logfire_token:
         logfire.configure(
             token=settings.logfire_token,
             service_name="ai-recepcionist",
             service_version=settings.service_version,
+            distributed_tracing=False,
         )
         logfire.instrument_openai()
         logfire.instrument_httpx()
